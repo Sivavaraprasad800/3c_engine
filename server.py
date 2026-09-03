@@ -369,9 +369,10 @@ class OneCapturePerVisit:
                 return False, {"reason": "similarity_match", "face_id": best_key,
                                "similarity": round(best_sim, 3)}
 
-            # Layer 2: cooldown — if any face was captured on this camera recently
-            # and similarity is moderate (same person, different angle)
-            if best_key and best_sim >= 0.30:
+            # Layer 2: cooldown — only block if SAME person (sim >= 0.50)
+            # FIX: raised from 0.30 to 0.50 — prevents blocking DIFFERENT people
+            # who just happen to look somewhat similar (0.30-0.50 range)
+            if best_key and best_sim >= 0.50:
                 rec = self._store[best_key]
                 time_since = now - rec["time"]
                 if time_since < self.cooldown:
@@ -824,6 +825,10 @@ def process_frame(image, camera_id, camera_type, threshold=None,
             cx, cy = (x1+x2)//2//50, (y1+y2)//2//50
             pos_key = f"{camera_id}:{cx}_{cy}"
 
+            # FIX: Reset per-iteration to prevent stale values from previous face
+            snapshot_path = None
+            face_crop = None
+
             _pid = r.get("person_id")
             _is_matched  = bool(r.get("matched"))
             _is_suspected = bool(r.get("suspected"))
@@ -849,19 +854,42 @@ def process_frame(image, camera_id, camera_type, threshold=None,
                             _recently_known[adj_key] = {
                                 "person_id":   _pid,
                                 "person_name": r["person_name"],
+                                "embedding":   r.get("raw_embedding"),
                                 "expire":      now + _SYSTEM_SETTINGS_CACHE.get("known_suppress_seconds", 120)
                             }
             else:
                 # ── Unknown person ───────────────────────────
+                # FIX: Only suppress if unknown's EMBEDDING matches the known person
+                # Previously blocked ALL unknowns at same position — wrong when
+                # different unknowns walk past the same camera
                 suppressed = False
-                for dx in [-1, 0, 1]:
-                    for dy in [-1, 0, 1]:
-                        adj = _recently_known.get(f"{camera_id}:{cx+dx}_{cy+dy}")
-                        if adj and now < adj["expire"]:
-                            suppressed = True
+                _unk_emb = r.get("raw_embedding")
+                if _unk_emb is not None:
+                    _unk_np = np.array(_unk_emb, dtype=np.float32).flatten()
+                    _unk_norm = np.linalg.norm(_unk_np)
+                    if _unk_norm > 0:
+                        _unk_np = _unk_np / _unk_norm
+                    for dx in [-1, 0, 1]:
+                        for dy in [-1, 0, 1]:
+                            adj = _recently_known.get(f"{camera_id}:{cx+dx}_{cy+dy}")
+                            if adj and now < adj["expire"]:
+                                # Check embedding similarity — only suppress if SAME person
+                                _adj_emb = adj.get("embedding")
+                                if _adj_emb is not None:
+                                    _adj_np = np.array(_adj_emb, dtype=np.float32).flatten()
+                                    _adj_norm = np.linalg.norm(_adj_np)
+                                    if _adj_norm > 0:
+                                        _adj_np = _adj_np / _adj_norm
+                                    _sim = float(np.dot(_unk_np, _adj_np))
+                                    if _sim >= 0.45:  # same person, suppress
+                                        suppressed = True
+                                        break
+                                else:
+                                    # No embedding stored — fall back to position-only
+                                    suppressed = True
+                                    break
+                        if suppressed:
                             break
-                    if suppressed:
-                        break
                 if suppressed:
                     continue
 
