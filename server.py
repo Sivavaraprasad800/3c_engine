@@ -787,7 +787,7 @@ def process_frame(image, camera_id, camera_type, threshold=None,
     elif before == 0:
         # SCRFD detected ZERO faces — this is the #1 reason detection fails
         _throttled_log(f"noface:{camera_id}", 30,
-                       f"[NoFace:{camera_id}] SCRFD found 0 faces in {w}x{h} frame (AI sees 960x540)"
+                       f"[NoFace:{camera_id}] SCRFD found 0 faces in {w}x{h} frame (AI sees up to 1280x720)"
                        f" — face too small/far/angle/lighting?")
 
     # ── Pre-filter unknowns BEFORE acquiring the lock ────────
@@ -931,15 +931,18 @@ def process_frame(image, camera_id, camera_type, threshold=None,
                     if _norm2 > 0:
                         _unk_np2 = _unk_np2 / _norm2
                     _sus_thresh = _SYSTEM_SETTINGS_CACHE.get("suspected_threshold", 0.37)
-                    _k2 = min(10, emp_index.ntotal)
-                    _sc2, _ids2 = emp_index.search(_unk_np2.reshape(1,-1), _k2)
-                    _seen2 = {}
-                    for _j2 in range(_k2):
-                        _fid2 = int(_ids2[0][_j2]); _sim2 = float(_sc2[0][_j2])
-                        if _fid2 in emp_map:
-                            _pid2 = emp_map[_fid2]["person_id"]
-                            if _pid2 not in _seen2 or _sim2 > _seen2[_pid2][0]:
-                                _seen2[_pid2] = (_sim2, emp_map[_fid2]["name"])
+                    # FIX: use engine.employee_index not emp_index (which doesn't exist in this scope)
+                    _emp_idx = engine.employee_index if engine is not None else None
+                    if _emp_idx is not None and _emp_idx.total > 0:
+                        _k2 = min(10, _emp_idx.total)
+                        _sc2, _ids2 = _emp_idx.index.search(_unk_np2.reshape(1,-1), _k2)
+                        _seen2 = {}
+                        for _j2 in range(_k2):
+                            _fid2 = int(_ids2[0][_j2]); _sim2 = float(_sc2[0][_j2])
+                            if _fid2 in _emp_idx.id_map:
+                                _pid2 = _emp_idx.id_map[_fid2]["person_id"]
+                                if _pid2 not in _seen2 or _sim2 > _seen2[_pid2][0]:
+                                    _seen2[_pid2] = (_sim2, _emp_idx.id_map[_fid2]["name"])
                     if _seen2:
                         _best2 = max(_seen2.values(), key=lambda x: x[0])
                         _best_sim2, _best_name2 = _best2
@@ -950,8 +953,8 @@ def process_frame(image, camera_id, camera_type, threshold=None,
                             r["suspected"]       = True
                             r["matched"]         = False
                             r["person_id"]       = next(
-                                (info["person_id"] for info in emp_map.values()
-                                 if info["name"] == _best_name2), None)
+                                (info["person_id"] for info in _emp_idx.id_map.values()
+                                 if info["name"] == _best_name2), None) if _emp_idx else None
                             # Re-route to matched/suspected path — skip unknown pipeline
                             _throttled_log(f"upgrade_sus:{camera_id}", 5,
                                 f"[UpgradeSuspected:{camera_id}] {_best_name2} {_best_sim2:.3f} — saved as suspected not unknown")
@@ -1474,10 +1477,12 @@ def camera_worker(cam: dict, stop_event: threading.Event):
                     except Exception:
                         pass
                 try:
-                    # Resize for AI — use 960x540 for high-res cameras
+                    # Resize for AI — use 1280x720 for high-res cameras
+                    # FIX: was 960x540 which caused missed detections at normal standing distance
+                    # 1280x720 gives SCRFD more pixels to find faces at 2-4m range
                     fw = frame.shape[1]
-                    if fw > 960:
-                        ai_frame = cv2.resize(frame, (960, 540),
+                    if fw > 1280:
+                        ai_frame = cv2.resize(frame, (1280, 720),
                                                interpolation=cv2.INTER_LINEAR)
                     else:
                         ai_frame = frame.copy()   # copy to prevent buffer overwrite
