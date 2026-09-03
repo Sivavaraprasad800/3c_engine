@@ -35,6 +35,7 @@ python restore_settings.py
 | `MAX_PITCH` | **40.0** | Up/down tilt tolerance |
 | `MAX_EMBEDDINGS_PER_PERSON` | **5** | 5 face images per person |
 | `det_size` | **(320, 320)** | SCRFD detector size — CRITICAL do not change |
+| `_model` | **buffalo_l** | CRITICAL: must match the model used to build face_index.faiss |
 | `OMP_NUM_THREADS` | **4** | CPU threads for AI |
 | `MySQL FAISS loading` | **DISABLED** | Uses local .faiss files only |
 
@@ -77,12 +78,13 @@ id_map.pkl         — person_id → name mapping
 
 ## What BREAKS Detection
 
-1. **Loading FAISS from MySQL** — MySQL embeddings were extracted with det_size=160, mismatch → low confidence → missed detections
-2. **Changing det_size from 320 to 160** — breaks all existing FAISS embeddings
-3. **Adding sleep(0.15) after inference** — blocks recognition, drops to 0.5 FPS
-4. **AI_MAX_CONCURRENT=1** — all cameras queue behind each other, very slow
-5. **face_threshold > 0.50** — misses many valid matches (11AM showed 52-71% confidence)
-6. **Wrong detection zones** — zones covering wrong area = person ignored
+1. **Using buffalo_s instead of buffalo_l** — Different model produces different embeddings → similarity drops to 0.20-0.30 → ALL faces show as Unknown. FAISS was built with buffalo_l, so live engine MUST also use buffalo_l.
+2. **Loading FAISS from MySQL** — MySQL embeddings were extracted with det_size=160, mismatch → low confidence → missed detections
+3. **Changing det_size from 320 to 160** — breaks all existing FAISS embeddings
+4. **Adding sleep(0.15) after inference** — blocks recognition, drops to 0.5 FPS
+5. **AI_MAX_CONCURRENT=1** — all cameras queue behind each other, very slow
+6. **face_threshold > 0.50** — misses many valid matches (11AM showed 52-71% confidence)
+7. **Wrong detection zones** — zones covering wrong area = person ignored
 
 ---
 

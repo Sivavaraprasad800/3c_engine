@@ -430,11 +430,10 @@ class FaceRecognitionEngine:
         so.inter_op_num_threads = 4    # parallel operations
         so.execution_mode = ort.ExecutionMode.ORT_PARALLEL
 
-        # Use buffalo_s — 2.4x faster than buffalo_l on CPU, negligible accuracy drop
+        # Use buffalo_l — MATCHES the model used to build face_index.faiss
+        # buffalo_s would produce DIFFERENT embeddings → low similarity → Unknown
         # buffalo_l: 120ms/frame, 99.83% accuracy
-        # buffalo_s:  50ms/frame, 99.77% accuracy (0.06% drop = invisible)
-        # Speed gain: 5 AI fps → 12 AI fps per camera on 16-core CPU
-        _model = "buffalo_s"
+        _model = "buffalo_l"
         print(f"[FaceEngine] Loading InsightFace {_model} (det_size={det_size[0]}x{det_size[1]})...")
 
         self.app = FaceAnalysis(name=_model, providers=providers,
@@ -717,6 +716,6 @@ class FaceRecognitionEngine:
                 v['person_id'] for v in self.employee_index.id_map.values()
             )),
             "embedding_dim": self.dim,
-            "detector":      "buffalo_s SCRFD (320x320)",
-            "recognizer":    "buffalo_s ArcFace (512-dim, multi-capture)"
+            "detector":      "buffalo_l SCRFD (320x320)",
+            "recognizer":    "buffalo_l ArcFace (512-dim, multi-capture)"
         }

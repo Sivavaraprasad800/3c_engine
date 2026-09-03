@@ -770,10 +770,8 @@ def process_frame(image, camera_id, camera_type, threshold=None,
         _throttled_log(f"zone:{camera_id}", 30,
                        f"[Zone:{camera_id}] Filtered {before-after}/{before} faces outside zone/angle limits")
 
-    # ── DEBUG: Log why faces are rejected (every 10th frame) ──
-    if before > 0 and after == 0 and frame_no % 10 == 0:
-        for r_dbg in [r for r in (results if results else [])][:1]:
-            pass  # results empty after filter — log below
+    # ── DEBUG: Log why faces are rejected ──
+    if before > 0 and after == 0:
         _throttled_log(f"reject:{camera_id}", 10,
                        f"[Reject:{camera_id}] All {before} face(s) rejected by post-filter"
                        f" (conf>={face_confidence}, zone, yaw {min_yaw}/{max_yaw}, pitch {min_pitch}/{max_pitch})")
