@@ -472,18 +472,21 @@ class EmbeddingAverager:
             age = now - buf["first_seen"]
             count = len(buf["embeddings"])
             
-            # Search when: have 2+ embeddings AND either aged 1.5s OR have 8+ embeddings
-            # Lowered from 3 to 2 for faster response (was missing faces at 3)
-            should_search = (count >= 2 and (age >= self.buffer_seconds * 0.5 or count >= self.max_embeddings))
+            # FIX: Always search on EVERY frame using best available embedding.
+            # Old behavior: wait for 2 frames + 1.5s = missed fast walkers.
+            # New behavior: search on first frame immediately (single emb),
+            # then search again with averaged emb after 1.5s for better confidence.
+            # This ensures NO face is ever skipped due to buffer wait.
+            should_search = True   # always search
             
             if should_search:
-                # Quality-weighted average
+                # Quality-weighted average (or single emb if only 1 frame)
                 avg_emb = self._quality_weighted_avg(buf["embeddings"], buf["scores"])
-                # Clear buffer after search (may already be cleaned by expiry)
-                self._buffers.pop(key, None)
+                # Only clear buffer after we have a good average (2+ frames, 1.5s)
+                # For first frame, keep buffer so we can average later
+                if count >= 2 and age >= self.buffer_seconds * 0.5:
+                    self._buffers.pop(key, None)  # clear after good average
                 return True, avg_emb
-            
-            return False, None
 
     def _quality_weighted_avg(self, embeddings, scores):
         """Weighted average: higher detection score = more weight."""
