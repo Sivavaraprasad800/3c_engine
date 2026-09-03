@@ -18,6 +18,10 @@ node_modules/
 dist/
 .vite/
 
+# ── ALL bat and ps1 scripts ──
+*.bat
+*.ps1
+
 # ── Research & analysis scripts (local only) ──
 analyze_4_events.py
 analyze_mani_images.py
@@ -37,7 +41,6 @@ test_match_all_templates.py
 patch_basicsr.py
 
 # ── Check / diagnose scripts (local only) ──
-check_cpu.ps1
 check_dashboard_cards.py
 check_dome_cameras.py
 check_persons_enrolled.py
