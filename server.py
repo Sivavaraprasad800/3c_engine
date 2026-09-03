@@ -369,10 +369,9 @@ class OneCapturePerVisit:
                 return False, {"reason": "similarity_match", "face_id": best_key,
                                "similarity": round(best_sim, 3)}
 
-            # Layer 2: cooldown — only block if SAME person (sim >= 0.50)
-            # FIX: raised from 0.30 to 0.50 — prevents blocking DIFFERENT people
-            # who just happen to look somewhat similar (0.30-0.50 range)
-            if best_key and best_sim >= 0.50:
+            # Layer 2: cooldown — if any face was captured on this camera recently
+            # and similarity is moderate (same person, different angle)
+            if best_key and best_sim >= 0.30:
                 rec = self._store[best_key]
                 time_since = now - rec["time"]
                 if time_since < self.cooldown:
@@ -472,21 +471,14 @@ class EmbeddingAverager:
             age = now - buf["first_seen"]
             count = len(buf["embeddings"])
             
-            # FIX: Always search on EVERY frame using best available embedding.
-            # Old behavior: wait for 2 frames + 1.5s = missed fast walkers.
-            # New behavior: search on first frame immediately (single emb),
-            # then search again with averaged emb after 1.5s for better confidence.
-            # This ensures NO face is ever skipped due to buffer wait.
-            should_search = True   # always search
-            
-            if should_search:
-                # Quality-weighted average (or single emb if only 1 frame)
-                avg_emb = self._quality_weighted_avg(buf["embeddings"], buf["scores"])
-                # Only clear buffer after we have a good average (2+ frames, 1.5s)
-                # For first frame, keep buffer so we can average later
-                if count >= 2 and age >= self.buffer_seconds * 0.5:
-                    self._buffers.pop(key, None)  # clear after good average
-                return True, avg_emb
+            # FIX: Search on EVERY frame — don't wait for 2 frames + 1.5s
+            # Old: wait for buffer = missed fast walkers, face-captured-no-name bug
+            # New: search immediately on frame 1, re-search with average on frame 2+
+            avg_emb = self._quality_weighted_avg(buf["embeddings"], buf["scores"])
+            # Only clear buffer after we have a good average (2+ frames)
+            if count >= 2 and age >= self.buffer_seconds * 0.5:
+                self._buffers.pop(key, None)
+            return True, avg_emb
 
     def _quality_weighted_avg(self, embeddings, scores):
         """Weighted average: higher detection score = more weight."""
@@ -703,13 +695,11 @@ def process_frame(image, camera_id, camera_type, threshold=None,
         if not pose_in_range(landmarks, min_yaw, max_yaw, min_pitch, max_pitch):
             continue
         
-        # Add to embedding averager buffer
+        # Add to embedding averager buffer — always returns True now (search every frame)
         should_search, avg_emb = _embedding_averager.add(
             emb, camera_id, bbox, det_score)
         
-        if not should_search:
-            # Not enough frames yet — skip FAISS search this frame
-            continue
+        # avg_emb is always returned now — no skip needed
         
         # Search FAISS with AVERAGED embedding (much cleaner than single frame)
         import numpy as _np
@@ -790,61 +780,18 @@ def process_frame(image, camera_id, camera_type, threshold=None,
     elif before == 0:
         # SCRFD detected ZERO faces — this is the #1 reason detection fails
         _throttled_log(f"noface:{camera_id}", 30,
-                       f"[NoFace:{camera_id}] SCRFD found 0 faces in {w}x{h} frame (AI sees up to 1280x720)"
+                       f"[NoFace:{camera_id}] SCRFD found 0 faces in {w}x{h} frame (AI sees 960x540)"
                        f" — face too small/far/angle/lighting?")
 
     # ── Pre-filter unknowns BEFORE acquiring the lock ────────
-    # FIX: For faces that are "unmatched" but have embeddings,
-    # do a quick FAISS check here. If sim >= suspected_threshold,
-    # upgrade to suspected so they DON'T go through _one_capture filter.
-    # This prevents enrolled people being blocked as Unknown by _one_capture.
-    _sus_thresh_pre = _SYSTEM_SETTINGS_CACHE.get("suspected_threshold", 0.37)
-    for _r in results:
-        if not _r.get("matched") and not _r.get("suspected"):
-            _pre_emb = _r.get("raw_embedding")
-            if _pre_emb is not None and engine is not None:
-                _pre_np = np.array(_pre_emb, dtype=np.float32).flatten()
-                _pre_norm = np.linalg.norm(_pre_np)
-                if _pre_norm > 0:
-                    _pre_np = _pre_np / _pre_norm
-                    _emp = engine.employee_index
-                    if _emp and _emp.total > 0:
-                        _pk = min(5, _emp.total)
-                        _psc, _pids = _emp.index.search(_pre_np.reshape(1,-1), _pk)
-                        _pseen = {}
-                        for _pi in range(_pk):
-                            _pfid = int(_pids[0][_pi]); _psim = float(_psc[0][_pi])
-                            if _pfid in _emp.id_map:
-                                _ppid = _emp.id_map[_pfid]["person_id"]
-                                if _ppid not in _pseen or _psim > _pseen[_ppid][0]:
-                                    _pseen[_ppid] = (_psim, _emp.id_map[_pfid]["name"])
-                        if _pseen:
-                            _pbest = max(_pseen.values(), key=lambda x: x[0])
-                            if _pbest[0] >= _sus_thresh_pre:
-                                # Upgrade to suspected — bypass unknown pipeline entirely
-                                _r["person_name"]      = _pbest[1]
-                                _r["match_confidence"] = _pbest[0]
-                                _r["suspected"]        = True
-                                _r["matched"]          = False
-                                _r["person_id"]        = next(
-                                    (info["person_id"] for info in _emp.id_map.values()
-                                     if info["name"] == _pbest[1]), None)
-                                _r["person_type"]      = "employee"
-
     filtered_results = []
     for r in results:
-        # FIX: Only run _one_capture check for truly unknown faces (no match, no suspect)
-        # Matched and suspected faces should ALWAYS pass through — never block them
-        # This was causing "face captured but no name" — recognition result dropped
-        if not r.get("matched") and not r.get("suspected"):
+        if not r.get("matched"):
             raw_emb = r.get("raw_embedding")
             allow, info = _one_capture.check(raw_emb, camera_id)
             if not allow:
                 continue
             r["_capture_info"] = info
-        else:
-            # Matched/suspected — always allow, set a dummy capture info
-            r["_capture_info"] = {"face_id": f"{camera_id}:{int(time.time()*1000)}"}
         filtered_results.append(r)
 
     if not filtered_results:
@@ -871,27 +818,6 @@ def process_frame(image, camera_id, camera_type, threshold=None,
             cx, cy = (x1+x2)//2//50, (y1+y2)//2//50
             pos_key = f"{camera_id}:{cx}_{cy}"
 
-            # FIX: Reset per-iteration to prevent stale values from previous face
-            snapshot_path = None
-            face_crop = None
-
-            # ── Capture face crop EARLY so it's available for all paths ──
-            # Must be before dedup/upgrade checks that need face_crop
-            _fw_e = x2-x1; _fh_e = y2-y1
-            _pad_x_e = max(8, int(_fw_e*0.15)); _pad_y_e = max(8, int(_fh_e*0.20))
-            _ih_e, _iw_e = image.shape[:2]
-            _cx1_e = max(0, x1-_pad_x_e); _cy1_e = max(0, y1-_pad_y_e)
-            _cx2_e = min(_iw_e, x2+_pad_x_e); _cy2_e = min(_ih_e, y2+_pad_y_e)
-            face_crop = image[_cy1_e:_cy2_e, _cx1_e:_cx2_e]
-            _tgt = 200
-            if face_crop.shape[0] < _tgt or face_crop.shape[1] < _tgt:
-                _sc_e = max(_tgt/face_crop.shape[0], _tgt/face_crop.shape[1])
-                face_crop = cv2.resize(face_crop,
-                    (int(face_crop.shape[1]*_sc_e), int(face_crop.shape[0]*_sc_e)),
-                    interpolation=cv2.INTER_LANCZOS4)
-            snap_b64_early = numpy_to_b64(face_crop)
-            snapshot_path = f"b64://{camera_id}_{int(time.time()*1000)}"
-
             _pid = r.get("person_id")
             _is_matched  = bool(r.get("matched"))
             _is_suspected = bool(r.get("suspected"))
@@ -911,55 +837,25 @@ def process_frame(image, camera_id, camera_type, threshold=None,
                     _deduplicated = True
                 if not _deduplicated:
                     _last_seen[dedup_key] = now
-                    # FIX: Store embedding with position key so unknown suppression
-                    # uses similarity check — not just position overlap.
-                    # Use tighter position grid (//30 instead of //50) to reduce
-                    # cross-person contamination when multiple people in same frame.
-                    tight_cx = (x1+x2)//2//30
-                    tight_cy = (y1+y2)//2//30
                     for dx in [-1, 0, 1]:
                         for dy in [-1, 0, 1]:
-                            adj_key = f"{camera_id}:{tight_cx+dx}_{tight_cy+dy}"
+                            adj_key = f"{camera_id}:{cx+dx}_{cy+dy}"
                             _recently_known[adj_key] = {
                                 "person_id":   _pid,
                                 "person_name": r["person_name"],
-                                "embedding":   r.get("raw_embedding"),
                                 "expire":      now + _SYSTEM_SETTINGS_CACHE.get("known_suppress_seconds", 120)
                             }
             else:
                 # ── Unknown person ───────────────────────────
-                # FIX: Only suppress if unknown's EMBEDDING matches the known person
-                # Previously blocked ALL unknowns at same position — wrong when
-                # different unknowns walk past the same camera
                 suppressed = False
-                _unk_emb = r.get("raw_embedding")
-                if _unk_emb is not None:
-                    _unk_np = np.array(_unk_emb, dtype=np.float32).flatten()
-                    _unk_norm = np.linalg.norm(_unk_np)
-                    if _unk_norm > 0:
-                        _unk_np = _unk_np / _unk_norm
-                    # FIX: Use same tight grid (//30) as the writer above
-                    tight_cx = (x1+x2)//2//30
-                    tight_cy = (y1+y2)//2//30
-                    for dx in [-1, 0, 1]:
-                        for dy in [-1, 0, 1]:
-                            adj = _recently_known.get(f"{camera_id}:{tight_cx+dx}_{tight_cy+dy}")
-                            if adj and now < adj["expire"]:
-                                # Check embedding similarity — only suppress if SAME person
-                                _adj_emb = adj.get("embedding")
-                                if _adj_emb is not None:
-                                    _adj_np = np.array(_adj_emb, dtype=np.float32).flatten()
-                                    _adj_norm = np.linalg.norm(_adj_np)
-                                    if _adj_norm > 0:
-                                        _adj_np = _adj_np / _adj_norm
-                                    _sim = float(np.dot(_unk_np, _adj_np))
-                                    if _sim >= 0.45:  # same person, suppress
-                                        suppressed = True
-                                        break
-                                # No embedding stored — do NOT suppress without similarity proof
-                                # This was the bug: position-only suppression caused wrong names
-                        if suppressed:
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        adj = _recently_known.get(f"{camera_id}:{cx+dx}_{cy+dy}")
+                        if adj and now < adj["expire"]:
+                            suppressed = True
                             break
+                    if suppressed:
+                        break
                 if suppressed:
                     continue
 
@@ -967,76 +863,35 @@ def process_frame(image, camera_id, camera_type, threshold=None,
                 if raw_emb is None:
                     continue
 
-                # FIX: Check if this "unknown" face actually matches an enrolled person
-                # at suspected level (0.37+). If yes, save as suspected — NOT as unknown.
-                # This was causing enrolled people to appear as Unknown when the
-                # single-frame confidence was 0.37-0.49 (above suspected but below identified).
-                if raw_emb is not None:
-                    _unk_np2 = np.array(raw_emb, dtype=np.float32).flatten()
-                    _norm2   = np.linalg.norm(_unk_np2)
-                    if _norm2 > 0:
-                        _unk_np2 = _unk_np2 / _norm2
-                    _sus_thresh = _SYSTEM_SETTINGS_CACHE.get("suspected_threshold", 0.37)
-                    # FIX: use engine.employee_index not emp_index (which doesn't exist in this scope)
-                    _emp_idx = engine.employee_index if engine is not None else None
-                    if _emp_idx is not None and _emp_idx.total > 0:
-                        _k2 = min(10, _emp_idx.total)
-                        _sc2, _ids2 = _emp_idx.index.search(_unk_np2.reshape(1,-1), _k2)
-                        _seen2 = {}
-                        for _j2 in range(_k2):
-                            _fid2 = int(_ids2[0][_j2]); _sim2 = float(_sc2[0][_j2])
-                            if _fid2 in _emp_idx.id_map:
-                                _pid2 = _emp_idx.id_map[_fid2]["person_id"]
-                                if _pid2 not in _seen2 or _sim2 > _seen2[_pid2][0]:
-                                    _seen2[_pid2] = (_sim2, _emp_idx.id_map[_fid2]["name"])
-                    if _seen2:
-                        _best2 = max(_seen2.values(), key=lambda x: x[0])
-                        _best_sim2, _best_name2 = _best2
-                        if _best_sim2 >= _sus_thresh:
-                            # Upgrade: save as suspected instead of unknown
-                            r["person_name"]     = _best_name2
-                            r["match_confidence"] = _best_sim2
-                            r["suspected"]       = True
-                            r["matched"]         = False
-                            r["person_id"]       = next(
-                                (info["person_id"] for info in _emp_idx.id_map.values()
-                                 if info["name"] == _best_name2), None) if _emp_idx else None
-                            # Re-route to matched/suspected path — skip unknown pipeline
-                            _throttled_log(f"upgrade_sus:{camera_id}", 5,
-                                f"[UpgradeSuspected:{camera_id}] {_best_name2} {_best_sim2:.3f} — saved as suspected not unknown")
-                            # Fall through to matched/suspected save below
-                            # by setting _is_suspected = True and continuing normally
-                            _is_suspected = True
-                            _pid = r["person_id"]
-                            # Save as suspected event directly
-                            try:
-                                _eid_s = get_entity_id(_pid) if _pid else ""
-                                db_save_event({
-                                    "camera_id":    camera_id,
-                                    "person_id":    _pid,
-                                    "person_name":  _best_name2,
-                                    "person_type":  "employee",
-                                    "confidence":   _best_sim2,
-                                    "bbox":         r["bbox"],
-                                    "snapshot_path": snapshot_path if snapshot_path else f"b64://{camera_id}_{int(now*1000)}",
-                                    "matched":      False,
-                                    "suspected":    True,
-                                    "timestamp":    now_iso,
-                                }, snapshot_array=face_crop, shared_conn=_frame_conn)
-                            except Exception:
-                                pass
-                            continue  # skip unknown pipeline
-
-                # Per-camera unknown cooldown (only for truly unknown faces)
                 last_unknown_time = _camera_unknown_last.get(camera_id, 0)
                 if now - last_unknown_time < _SYSTEM_SETTINGS_CACHE.get("camera_unknown_cooldown", 15):
                     continue
                 _camera_unknown_last[camera_id] = now
 
-            # ── face_crop already captured above (early capture) ──
-            # Reuse it — no need to capture again
-            snap_b64  = snap_b64_early   # already stored in DB as base64
-            # snapshot_path already set above
+            # ── Capture face crop as Base64 (DB storage — no disk needed) ──
+            # IMPROVED: 15% padding (less background, more face) + target 200px
+            fw = x2 - x1  # face width
+            fh = y2 - y1  # face height
+            pad_x = max(8, int(fw * 0.15))   # 15% padding (was 30%)
+            pad_y = max(8, int(fh * 0.20))   # 20% padding top/bottom (was 35%)
+            ih, iw = image.shape[:2]
+            cx1 = max(0, x1 - pad_x)
+            cy1 = max(0, y1 - pad_y)
+            cx2 = min(iw, x2 + pad_x)
+            cy2 = min(ih, y2 + pad_y)
+            face_crop = image[cy1:cy2, cx1:cx2]
+            # Target 200px for stored crop (was 112px) — much clearer for dashboard display
+            _target_size = 200
+            if face_crop.shape[0] < _target_size or face_crop.shape[1] < _target_size:
+                scale = max(_target_size / face_crop.shape[0], _target_size / face_crop.shape[1])
+                new_w = int(face_crop.shape[1] * scale)
+                new_h = int(face_crop.shape[0] * scale)
+                # Use LANCZOS4 for best quality upscale (was INTER_CUBIC)
+                face_crop = cv2.resize(face_crop, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+            snap_b64  = numpy_to_b64(face_crop)   # stored in DB as base64
+            # snapshot_path kept as a reference string (no disk write needed)
+            ts = int(time.time()*1000)
+            snapshot_path = f"b64://{camera_id}_{ts}"   # virtual path — actual data in DB
 
             capture_known_only = _SYSTEM_SETTINGS_CACHE.get("capture_known_only", False)
             is_matched_or_suspected = bool(r.get("matched") or r.get("suspected"))
@@ -1523,12 +1378,10 @@ def camera_worker(cam: dict, stop_event: threading.Event):
                     except Exception:
                         pass
                 try:
-                    # Resize for AI — use 1280x720 for high-res cameras
-                    # FIX: was 960x540 which caused missed detections at normal standing distance
-                    # 1280x720 gives SCRFD more pixels to find faces at 2-4m range
+                    # Resize for AI — use 960x540 for high-res cameras
                     fw = frame.shape[1]
-                    if fw > 1280:
-                        ai_frame = cv2.resize(frame, (1280, 720),
+                    if fw > 960:
+                        ai_frame = cv2.resize(frame, (960, 540),
                                                interpolation=cv2.INTER_LINEAR)
                     else:
                         ai_frame = frame.copy()   # copy to prevent buffer overwrite
