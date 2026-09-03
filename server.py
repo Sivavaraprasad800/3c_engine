@@ -829,6 +829,23 @@ def process_frame(image, camera_id, camera_type, threshold=None,
             snapshot_path = None
             face_crop = None
 
+            # ── Capture face crop EARLY so it's available for all paths ──
+            # Must be before dedup/upgrade checks that need face_crop
+            _fw_e = x2-x1; _fh_e = y2-y1
+            _pad_x_e = max(8, int(_fw_e*0.15)); _pad_y_e = max(8, int(_fh_e*0.20))
+            _ih_e, _iw_e = image.shape[:2]
+            _cx1_e = max(0, x1-_pad_x_e); _cy1_e = max(0, y1-_pad_y_e)
+            _cx2_e = min(_iw_e, x2+_pad_x_e); _cy2_e = min(_ih_e, y2+_pad_y_e)
+            face_crop = image[_cy1_e:_cy2_e, _cx1_e:_cx2_e]
+            _tgt = 200
+            if face_crop.shape[0] < _tgt or face_crop.shape[1] < _tgt:
+                _sc_e = max(_tgt/face_crop.shape[0], _tgt/face_crop.shape[1])
+                face_crop = cv2.resize(face_crop,
+                    (int(face_crop.shape[1]*_sc_e), int(face_crop.shape[0]*_sc_e)),
+                    interpolation=cv2.INTER_LANCZOS4)
+            snap_b64_early = numpy_to_b64(face_crop)
+            snapshot_path = f"b64://{camera_id}_{int(time.time()*1000)}"
+
             _pid = r.get("person_id")
             _is_matched  = bool(r.get("matched"))
             _is_suspected = bool(r.get("suspected"))
@@ -904,35 +921,73 @@ def process_frame(image, camera_id, camera_type, threshold=None,
                 if raw_emb is None:
                     continue
 
+                # FIX: Check if this "unknown" face actually matches an enrolled person
+                # at suspected level (0.37+). If yes, save as suspected — NOT as unknown.
+                # This was causing enrolled people to appear as Unknown when the
+                # single-frame confidence was 0.37-0.49 (above suspected but below identified).
+                if raw_emb is not None:
+                    _unk_np2 = np.array(raw_emb, dtype=np.float32).flatten()
+                    _norm2   = np.linalg.norm(_unk_np2)
+                    if _norm2 > 0:
+                        _unk_np2 = _unk_np2 / _norm2
+                    _sus_thresh = _SYSTEM_SETTINGS_CACHE.get("suspected_threshold", 0.37)
+                    _k2 = min(10, emp_index.ntotal)
+                    _sc2, _ids2 = emp_index.search(_unk_np2.reshape(1,-1), _k2)
+                    _seen2 = {}
+                    for _j2 in range(_k2):
+                        _fid2 = int(_ids2[0][_j2]); _sim2 = float(_sc2[0][_j2])
+                        if _fid2 in emp_map:
+                            _pid2 = emp_map[_fid2]["person_id"]
+                            if _pid2 not in _seen2 or _sim2 > _seen2[_pid2][0]:
+                                _seen2[_pid2] = (_sim2, emp_map[_fid2]["name"])
+                    if _seen2:
+                        _best2 = max(_seen2.values(), key=lambda x: x[0])
+                        _best_sim2, _best_name2 = _best2
+                        if _best_sim2 >= _sus_thresh:
+                            # Upgrade: save as suspected instead of unknown
+                            r["person_name"]     = _best_name2
+                            r["match_confidence"] = _best_sim2
+                            r["suspected"]       = True
+                            r["matched"]         = False
+                            r["person_id"]       = next(
+                                (info["person_id"] for info in emp_map.values()
+                                 if info["name"] == _best_name2), None)
+                            # Re-route to matched/suspected path — skip unknown pipeline
+                            _throttled_log(f"upgrade_sus:{camera_id}", 5,
+                                f"[UpgradeSuspected:{camera_id}] {_best_name2} {_best_sim2:.3f} — saved as suspected not unknown")
+                            # Fall through to matched/suspected save below
+                            # by setting _is_suspected = True and continuing normally
+                            _is_suspected = True
+                            _pid = r["person_id"]
+                            # Save as suspected event directly
+                            try:
+                                _eid_s = get_entity_id(_pid) if _pid else ""
+                                db_save_event({
+                                    "camera_id":    camera_id,
+                                    "person_id":    _pid,
+                                    "person_name":  _best_name2,
+                                    "person_type":  "employee",
+                                    "confidence":   _best_sim2,
+                                    "bbox":         r["bbox"],
+                                    "snapshot_path": snapshot_path if snapshot_path else f"b64://{camera_id}_{int(now*1000)}",
+                                    "matched":      False,
+                                    "suspected":    True,
+                                    "timestamp":    now_iso,
+                                }, snapshot_array=face_crop, shared_conn=_frame_conn)
+                            except Exception:
+                                pass
+                            continue  # skip unknown pipeline
+
+                # Per-camera unknown cooldown (only for truly unknown faces)
                 last_unknown_time = _camera_unknown_last.get(camera_id, 0)
                 if now - last_unknown_time < _SYSTEM_SETTINGS_CACHE.get("camera_unknown_cooldown", 15):
                     continue
                 _camera_unknown_last[camera_id] = now
 
-            # ── Capture face crop as Base64 (DB storage — no disk needed) ──
-            # IMPROVED: 15% padding (less background, more face) + target 200px
-            fw = x2 - x1  # face width
-            fh = y2 - y1  # face height
-            pad_x = max(8, int(fw * 0.15))   # 15% padding (was 30%)
-            pad_y = max(8, int(fh * 0.20))   # 20% padding top/bottom (was 35%)
-            ih, iw = image.shape[:2]
-            cx1 = max(0, x1 - pad_x)
-            cy1 = max(0, y1 - pad_y)
-            cx2 = min(iw, x2 + pad_x)
-            cy2 = min(ih, y2 + pad_y)
-            face_crop = image[cy1:cy2, cx1:cx2]
-            # Target 200px for stored crop (was 112px) — much clearer for dashboard display
-            _target_size = 200
-            if face_crop.shape[0] < _target_size or face_crop.shape[1] < _target_size:
-                scale = max(_target_size / face_crop.shape[0], _target_size / face_crop.shape[1])
-                new_w = int(face_crop.shape[1] * scale)
-                new_h = int(face_crop.shape[0] * scale)
-                # Use LANCZOS4 for best quality upscale (was INTER_CUBIC)
-                face_crop = cv2.resize(face_crop, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
-            snap_b64  = numpy_to_b64(face_crop)   # stored in DB as base64
-            # snapshot_path kept as a reference string (no disk write needed)
-            ts = int(time.time()*1000)
-            snapshot_path = f"b64://{camera_id}_{ts}"   # virtual path — actual data in DB
+            # ── face_crop already captured above (early capture) ──
+            # Reuse it — no need to capture again
+            snap_b64  = snap_b64_early   # already stored in DB as base64
+            # snapshot_path already set above
 
             capture_known_only = _SYSTEM_SETTINGS_CACHE.get("capture_known_only", False)
             is_matched_or_suspected = bool(r.get("matched") or r.get("suspected"))
