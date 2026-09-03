@@ -842,6 +842,9 @@ def process_frame(image, camera_id, camera_type, threshold=None,
             if not allow:
                 continue
             r["_capture_info"] = info
+        else:
+            # Matched/suspected — always allow, set a dummy capture info
+            r["_capture_info"] = {"face_id": f"{camera_id}:{int(time.time()*1000)}"}
         filtered_results.append(r)
 
     if not filtered_results:
