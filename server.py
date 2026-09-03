@@ -791,9 +791,46 @@ def process_frame(image, camera_id, camera_type, threshold=None,
                        f" — face too small/far/angle/lighting?")
 
     # ── Pre-filter unknowns BEFORE acquiring the lock ────────
+    # FIX: For faces that are "unmatched" but have embeddings,
+    # do a quick FAISS check here. If sim >= suspected_threshold,
+    # upgrade to suspected so they DON'T go through _one_capture filter.
+    # This prevents enrolled people being blocked as Unknown by _one_capture.
+    _sus_thresh_pre = _SYSTEM_SETTINGS_CACHE.get("suspected_threshold", 0.37)
+    for _r in results:
+        if not _r.get("matched") and not _r.get("suspected"):
+            _pre_emb = _r.get("raw_embedding")
+            if _pre_emb is not None and engine is not None:
+                _pre_np = np.array(_pre_emb, dtype=np.float32).flatten()
+                _pre_norm = np.linalg.norm(_pre_np)
+                if _pre_norm > 0:
+                    _pre_np = _pre_np / _pre_norm
+                    _emp = engine.employee_index
+                    if _emp and _emp.total > 0:
+                        _pk = min(5, _emp.total)
+                        _psc, _pids = _emp.index.search(_pre_np.reshape(1,-1), _pk)
+                        _pseen = {}
+                        for _pi in range(_pk):
+                            _pfid = int(_pids[0][_pi]); _psim = float(_psc[0][_pi])
+                            if _pfid in _emp.id_map:
+                                _ppid = _emp.id_map[_pfid]["person_id"]
+                                if _ppid not in _pseen or _psim > _pseen[_ppid][0]:
+                                    _pseen[_ppid] = (_psim, _emp.id_map[_pfid]["name"])
+                        if _pseen:
+                            _pbest = max(_pseen.values(), key=lambda x: x[0])
+                            if _pbest[0] >= _sus_thresh_pre:
+                                # Upgrade to suspected — bypass unknown pipeline entirely
+                                _r["person_name"]      = _pbest[1]
+                                _r["match_confidence"] = _pbest[0]
+                                _r["suspected"]        = True
+                                _r["matched"]          = False
+                                _r["person_id"]        = next(
+                                    (info["person_id"] for info in _emp.id_map.values()
+                                     if info["name"] == _pbest[1]), None)
+                                _r["person_type"]      = "employee"
+
     filtered_results = []
     for r in results:
-        if not r.get("matched"):
+        if not r.get("matched") and not r.get("suspected"):
             raw_emb = r.get("raw_embedding")
             allow, info = _one_capture.check(raw_emb, camera_id)
             if not allow:
