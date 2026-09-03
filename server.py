@@ -848,9 +848,15 @@ def process_frame(image, camera_id, camera_type, threshold=None,
                     _deduplicated = True
                 if not _deduplicated:
                     _last_seen[dedup_key] = now
+                    # FIX: Store embedding with position key so unknown suppression
+                    # uses similarity check — not just position overlap.
+                    # Use tighter position grid (//30 instead of //50) to reduce
+                    # cross-person contamination when multiple people in same frame.
+                    tight_cx = (x1+x2)//2//30
+                    tight_cy = (y1+y2)//2//30
                     for dx in [-1, 0, 1]:
                         for dy in [-1, 0, 1]:
-                            adj_key = f"{camera_id}:{cx+dx}_{cy+dy}"
+                            adj_key = f"{camera_id}:{tight_cx+dx}_{tight_cy+dy}"
                             _recently_known[adj_key] = {
                                 "person_id":   _pid,
                                 "person_name": r["person_name"],
@@ -869,9 +875,12 @@ def process_frame(image, camera_id, camera_type, threshold=None,
                     _unk_norm = np.linalg.norm(_unk_np)
                     if _unk_norm > 0:
                         _unk_np = _unk_np / _unk_norm
+                    # FIX: Use same tight grid (//30) as the writer above
+                    tight_cx = (x1+x2)//2//30
+                    tight_cy = (y1+y2)//2//30
                     for dx in [-1, 0, 1]:
                         for dy in [-1, 0, 1]:
-                            adj = _recently_known.get(f"{camera_id}:{cx+dx}_{cy+dy}")
+                            adj = _recently_known.get(f"{camera_id}:{tight_cx+dx}_{tight_cy+dy}")
                             if adj and now < adj["expire"]:
                                 # Check embedding similarity — only suppress if SAME person
                                 _adj_emb = adj.get("embedding")
@@ -884,10 +893,8 @@ def process_frame(image, camera_id, camera_type, threshold=None,
                                     if _sim >= 0.45:  # same person, suppress
                                         suppressed = True
                                         break
-                                else:
-                                    # No embedding stored — fall back to position-only
-                                    suppressed = True
-                                    break
+                                # No embedding stored — do NOT suppress without similarity proof
+                                # This was the bug: position-only suppression caused wrong names
                         if suppressed:
                             break
                 if suppressed:

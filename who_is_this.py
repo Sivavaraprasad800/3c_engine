@@ -27,7 +27,10 @@ emp_index = faiss.read_index("face_index.faiss")
 with open("id_map.pkl","rb") as f:
     emp_map = pickle.load(f)["id_map"]
 
-img_path = r"C:\Users\siva\Downloads\result\snapshot.jpg"
+img_path = r"C:\Users\siva\Downloads\result\snapshot (1).jpg"
+
+# Also analyze snapshot 3 for comparison
+img_path2 = r"C:\Users\siva\Downloads\result\snapshot (3).jpg"
 img = cv2.imread(img_path)
 if img is None:
     print("Cannot read image"); sys.exit(1)
