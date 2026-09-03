@@ -75,7 +75,7 @@ cur.execute("""
       AND (person_name='Unknown' OR person_name IS NULL)
       AND snapshot_b64 IS NOT NULL AND snapshot_b64 != ''
     ORDER BY timestamp DESC
-    LIMIT 20
+    LIMIT 30
 """)
 rows = cur.fetchall()
 conn.close()

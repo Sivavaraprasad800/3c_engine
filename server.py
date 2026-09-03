@@ -833,6 +833,9 @@ def process_frame(image, camera_id, camera_type, threshold=None,
 
     filtered_results = []
     for r in results:
+        # FIX: Only run _one_capture check for truly unknown faces (no match, no suspect)
+        # Matched and suspected faces should ALWAYS pass through — never block them
+        # This was causing "face captured but no name" — recognition result dropped
         if not r.get("matched") and not r.get("suspected"):
             raw_emb = r.get("raw_embedding")
             allow, info = _one_capture.check(raw_emb, camera_id)
