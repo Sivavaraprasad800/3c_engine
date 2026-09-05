@@ -5225,6 +5225,23 @@ function CamerasPage() {
     setModeLoading(false);
   };
 
+  const openAdd = () => { setEditing(null); setForm({ id: "", name: "", rtsp_url: "", camera_type: "frs", fps: 30, enabled: true, notes: "", room_id: "" }); setShowModal(true); };
+  const openEdit = (cam) => { setEditing(cam.id); setForm({ ...cam }); setShowModal(true); };
+
+  const save = async () => {
+    if (!form.id || !form.name || !form.rtsp_url) return;
+    setSaving(true);
+    let res;
+    if (editing) res = await fetchAPI(`/api/v1/cameras/${encodeURIComponent(editing)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) });
+    else res = await fetchAPI("/api/v1/cameras", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) });
+    if (!res || !res.success) { alert(`Failed to ${editing ? "update" : "add"} camera — check the server console.`); setSaving(false); return; }
+    await load(); setSaving(false); setShowModal(false);
+  };
+
+  const remove = async (id) => { if (!window.confirm("Delete camera?")) return; const res = await fetchAPI(`/api/v1/cameras/${encodeURIComponent(id)}`, { method: "DELETE" }); if (!res || !res.success) alert("Failed to delete camera — check the server console."); load(); };
+  const toggle = async (cam) => { await fetchAPI(`/api/v1/cameras/${encodeURIComponent(cam.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !cam.enabled }) }); load(); };
+  const toggleRun = async (cam) => { await fetchAPI(`/api/v1/cameras/${encodeURIComponent(cam.id)}/${cam.running ? "stop" : "start"}`, { method: "POST" }); setTimeout(load, 500); };
+
   return (
     <div>
       <div className="toolbar" style={{ flexWrap: "wrap", gap: 8 }}>
