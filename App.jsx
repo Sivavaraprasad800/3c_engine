@@ -4924,11 +4924,28 @@ function CameraPulseMeter({ cameraId, visible }) {
   );
 }
 
-function CameraPulseCard({ camera }) {
+// Time range options: label → how many history points to keep (poll every 3s)
+const PULSE_RANGES = [
+  { label: "30s",  points: 10  },
+  { label: "1min", points: 20  },
+  { label: "5min", points: 100 },
+  { label: "15min",points: 300 },
+];
+
+function CameraPulseCard({ camera, rangePoints }) {
   const [pulse, setPulse] = useState(null);
-  const [fpsHistory, setFpsHistory] = useState(new Array(30).fill(0));
+  const [fpsHistory, setFpsHistory] = useState(new Array(rangePoints).fill(0));
   const [loading, setLoading] = useState(true);
   const [showDetails, setShowDetails] = useState(false);
+
+  // When rangePoints changes, resize history buffer
+  useEffect(() => {
+    setFpsHistory(prev => {
+      if (prev.length === rangePoints) return prev;
+      if (rangePoints > prev.length) return [...new Array(rangePoints - prev.length).fill(0), ...prev];
+      return prev.slice(prev.length - rangePoints);
+    });
+  }, [rangePoints]);
 
   useEffect(() => {
     let active = true;
@@ -4939,8 +4956,8 @@ function CameraPulseCard({ camera }) {
           setPulse(d);
           setLoading(false);
           setFpsHistory(prev => {
-            const next = [...prev.slice(1), d.fps];
-            return next;
+            const buf = prev.length === rangePoints ? prev : prev.slice(prev.length - rangePoints);
+            return [...buf.slice(1), d.fps];
           });
         }
       });
@@ -4952,41 +4969,34 @@ function CameraPulseCard({ camera }) {
 
   if (loading || !pulse) {
     return (
-      <div className="pulse-card" style={{ opacity: 0.6, minHeight: 180, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div style={{ fontSize: 12, color: "var(--text2)" }}>Loading pulse for {camera.name}...</div>
+      <div className="pulse-card" style={{ opacity: 0.6, minHeight: 160, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ fontSize: 12, color: "var(--text2)" }}>Loading pulse for {camera.name}…</div>
       </div>
     );
   }
 
   const isOnline = pulse.running && pulse.fps > 0;
-  const fpsColor = !isOnline ? "var(--red)" : pulse.fps >= pulse.target_fps * 0.8 ? "var(--green)" : pulse.fps >= pulse.target_fps * 0.4 ? "var(--orange)" : "var(--red)";
+  const fpsColor = !isOnline ? "var(--red)"
+    : pulse.fps >= pulse.target_fps * 0.8 ? "var(--green)"
+    : pulse.fps >= pulse.target_fps * 0.4 ? "var(--orange)" : "var(--red)";
 
-  // Render SVG EKG line
-  const width = 340;
-  const height = 60;
-  const pointsCount = fpsHistory.length;
-  const xStep = width / (pointsCount - 1);
+  // Build SVG EKG path
+  const svgW = 340, svgH = 60;
   const maxVal = Math.max(pulse.target_fps, 10);
-
-  const points = fpsHistory.map((val, idx) => {
-    const x = idx * xStep;
-    const y = height - 5 - (val / maxVal) * (height - 10);
+  const pts = fpsHistory.map((val, idx) => {
+    const x = (idx / (fpsHistory.length - 1)) * svgW;
+    const y = svgH - 5 - (val / maxVal) * (svgH - 10);
     return [x, y];
   });
-
-  let pathD = "";
-  if (points.length > 0) {
-    pathD = `M ${points[0][0]} ${points[0][1]}`;
-    for (let i = 1; i < points.length; i++) {
-      const prev = points[i - 1];
-      const curr = points[i];
-      const cpx = (prev[0] + curr[0]) / 2;
-      pathD += ` C ${cpx} ${prev[1]}, ${cpx} ${curr[1]}, ${curr[0]} ${curr[1]}`;
-    }
+  let pathD = pts.length > 0 ? `M ${pts[0][0]} ${pts[0][1]}` : "";
+  for (let i = 1; i < pts.length; i++) {
+    const cpx = (pts[i - 1][0] + pts[i][0]) / 2;
+    pathD += ` C ${cpx} ${pts[i-1][1]}, ${cpx} ${pts[i][1]}, ${pts[i][0]} ${pts[i][1]}`;
   }
 
   return (
     <div className="pulse-card">
+      {/* Header */}
       <div className="pulse-card-header">
         <div>
           <div className="pulse-title">{camera.name}</div>
@@ -4995,91 +5005,73 @@ function CameraPulseCard({ camera }) {
         <div className="pulse-status-indicator">
           <div className={`status-dot ${isOnline ? "pulsing" : "flatline"}`} />
           <span style={{ color: isOnline ? "var(--green)" : "var(--red)", fontWeight: 500 }}>
-            {isOnline ? "ONLINE" : "FLATLINE / OFFLINE"}
+            {isOnline ? "ONLINE" : "OFFLINE"}
           </span>
         </div>
       </div>
 
+      {/* FPS readout + stats row */}
       <div className="pulse-readout-wrap">
         <div>
           <div className="pulse-fps-label">FPS Pulse</div>
-          <div className="pulse-fps-val" style={{ color: fpsColor }}>
-            {pulse.fps.toFixed(1)}
-          </div>
+          <div className="pulse-fps-val" style={{ color: fpsColor }}>{pulse.fps.toFixed(1)}</div>
           <div className="pulse-fps-target">of {pulse.target_fps}</div>
         </div>
-        <div style={{ textAlign: "right", fontSize: 11, color: "var(--text2)" }}>
-          <div>Detections: <b>{pulse.total_detections}</b></div>
-          <div>Inside: <b style={{ color: "var(--green)" }}>{pulse.inside_now}</b></div>
+        <div style={{ display: "flex", gap: 16, fontSize: 11, color: "var(--text2)", alignItems: "flex-end", paddingBottom: 4 }}>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "var(--text)", lineHeight: 1 }}>{pulse.total_detections}</div>
+            <div style={{ fontSize: 9, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".05em" }}>Detections</div>
+          </div>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "var(--green)", lineHeight: 1 }}>{pulse.known_count ?? 0}</div>
+            <div style={{ fontSize: 9, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".05em" }}>Known</div>
+          </div>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "var(--orange)", lineHeight: 1 }}>{pulse.unknown_count ?? 0}</div>
+            <div style={{ fontSize: 9, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".05em" }}>Unknown</div>
+          </div>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "var(--accent)", lineHeight: 1 }}>{pulse.inside_now ?? 0}</div>
+            <div style={{ fontSize: 9, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".05em" }}>Inside</div>
+          </div>
         </div>
       </div>
 
-      {/* ── LIVE FEED (MJPEG stream) ── */}
-      <div style={{ position: "relative", background: "#000", lineHeight: 0, marginBottom: 8 }}>
-        <img
-          src={`${API_BASE}/api/v1/cameras/${encodeURIComponent(camera.id)}/stream`}
-          alt="Live Feed"
-          style={{ width: "100%", display: "block", aspectRatio: "16/9", objectFit: "cover", background: "#000" }}
-        />
-        <div style={{
-          position: "absolute", top: 6, left: 6, background: "rgba(0,0,0,.75)",
-          padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600,
-          display: "flex", alignItems: "center", gap: 5,
-          color: isOnline ? "var(--green)" : "var(--red)"
-        }}>
-          <span className={`status-dot ${isOnline ? "pulsing" : "flatline"}`} /> LIVE
-        </div>
-        <div style={{
-          position: "absolute", top: 6, right: 6, background: "rgba(0,0,0,.75)",
-          padding: "2px 8px", borderRadius: 4, fontSize: 10, color: "var(--text2)", fontFamily: "monospace"
-        }}>
-          AI {((pulse.rec_fps ?? 0) || 0).toFixed(1)} fps
-        </div>
-      </div>
-
-      <div className="pulse-graph-box">
+      {/* EKG Graph — NO video */}
+      <div className="pulse-graph-box" style={{ height: 70 }}>
         <div className="pulse-graph-grid" />
-        <svg width="100%" height="100%" viewBox={`0 0 ${width} ${height}`} style={{ display: "block", overflow: "visible" }}>
+        <svg width="100%" height="100%" viewBox={`0 0 ${svgW} ${svgH}`} style={{ display: "block", overflow: "visible" }}>
           <defs>
             <filter id={`glow-${camera.id}`} x="-20%" y="-20%" width="140%" height="140%">
               <feGaussianBlur stdDeviation="1.5" result="blur" />
-              <feMerge>
-                <feMergeNode in="blur" />
-                <feMergeNode in="SourceGraphic" />
-              </feMerge>
+              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
             </filter>
           </defs>
           {isOnline ? (
-            <path
-              d={pathD}
-              fill="none"
-              stroke={fpsColor}
-              strokeWidth="2"
-              filter={`url(#glow-${camera.id})`}
-              style={{ transition: "d 0.3s ease" }}
-            />
+            <path d={pathD} fill="none" stroke={fpsColor} strokeWidth="2"
+              filter={`url(#glow-${camera.id})`} style={{ transition: "d 0.3s ease" }} />
           ) : (
-            <line
-              x1="0"
-              y1={height - 5}
-              x2={width}
-              y2={height - 5}
-              stroke="var(--red)"
-              strokeWidth="2"
-              filter={`url(#glow-${camera.id})`}
-            />
+            <line x1="0" y1={svgH - 5} x2={svgW} y2={svgH - 5}
+              stroke="var(--red)" strokeWidth="2" filter={`url(#glow-${camera.id})`} />
           )}
         </svg>
       </div>
 
-      <button className="pulse-details-btn" onClick={() => setShowDetails(!showDetails)}>
-        {showDetails ? "▲ Hide Camera Details" : "▼ Show Camera Details & Config"}
-      </button>
+      {/* AI FPS sub-stat */}
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--text3)", padding: "4px 2px 6px" }}>
+        <span>AI proc: <b style={{ color: "var(--text2)" }}>{((pulse.rec_fps ?? 0) || 0).toFixed(1)} fps</b></span>
+        <span>Zone: <b style={{ color: pulse.has_zone ? "var(--green)" : "var(--text3)" }}>{pulse.has_zone ? "Active" : "None"}</b></span>
+        <span>Type: <b style={{ color: "var(--text2)" }}>{camera.camera_type}</b></span>
+      </div>
 
+      {/* Expandable details */}
+      <button className="pulse-details-btn" onClick={() => setShowDetails(!showDetails)}>
+        {showDetails ? "▲ Hide Details" : "▼ Show Camera Details"}
+      </button>
       {showDetails && (
         <div className="pulse-details-grid">
           <div className="pulse-detail-item" style={{ gridColumn: "span 2" }}>
-            <span className="pulse-detail-lbl">RTSP Connection URL</span>
+            <span className="pulse-detail-lbl">RTSP URL</span>
             <span className="pulse-detail-val" style={{ fontFamily: "monospace", wordBreak: "break-all" }}>{camera.rtsp_url}</span>
           </div>
           <div className="pulse-detail-item">
@@ -5107,16 +5099,14 @@ function CameraPulseCard({ camera }) {
             <span className="pulse-detail-val">[{camera.min_pitch}°, {camera.max_pitch}°]</span>
           </div>
           <div className="pulse-detail-item">
-            <span className="pulse-detail-lbl">Zone Status</span>
+            <span className="pulse-detail-lbl">Zone</span>
             <span className="pulse-detail-val">
-              {camera.detection_zone?.length >= 3 ? `✓ Active (${camera.detection_zone.length} points)` : "No polygon zone"}
+              {camera.detection_zone?.length >= 3 ? `✓ ${camera.detection_zone.length} points` : "No zone"}
             </span>
           </div>
           <div className="pulse-detail-item">
-            <span className="pulse-detail-lbl">Options</span>
-            <span className="pulse-detail-val" style={{ fontSize: 10 }}>
-              {camera.enabled ? "Enabled" : "Disabled"} | {camera.send_image ? "Send Crops" : "No Crops"}
-            </span>
+            <span className="pulse-detail-lbl">Status</span>
+            <span className="pulse-detail-val">{camera.enabled ? "Enabled" : "Disabled"}</span>
           </div>
           {camera.notes && (
             <div className="pulse-detail-item" style={{ gridColumn: "span 2" }}>
@@ -5133,37 +5123,55 @@ function CameraPulseCard({ camera }) {
 function CameraPulsePage() {
   const [cameras, setCameras] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [rangeIdx, setRangeIdx] = useState(0); // default: 30s
 
   const load = () => {
     fetchAPI("/api/v1/cameras").then(d => {
-      if (d && d.cameras) {
-        setCameras(d.cameras);
-      }
+      if (d && d.cameras) setCameras(d.cameras);
       setLoading(false);
     });
   };
 
-  useEffect(() => {
-    load();
-  }, []);
+  useEffect(() => { load(); }, []);
+
+  const selectedRange = PULSE_RANGES[rangeIdx];
 
   return (
     <div>
-      <div className="toolbar" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontSize: 11, color: "var(--text2)", textTransform: "uppercase", letterSpacing: ".06em" }}>
-          Real-time CCTV stream heartbeats and configurations
-        </span>
-        <button className="btn btn-sm" onClick={load}><Icon path={icons.refresh} size={12} /> Refresh Cameras</button>
+      <div className="toolbar" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        {/* Time range selector */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 11, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".06em" }}>Window:</span>
+          {PULSE_RANGES.map((r, i) => (
+            <button
+              key={r.label}
+              onClick={() => setRangeIdx(i)}
+              style={{
+                fontSize: 11, padding: "3px 10px", borderRadius: 4, border: "none", cursor: "pointer",
+                background: i === rangeIdx ? "var(--accent)" : "var(--surface2)",
+                color: i === rangeIdx ? "#fff" : "var(--text2)",
+                fontWeight: i === rangeIdx ? 700 : 400,
+                transition: "all .15s"
+              }}
+            >
+              {r.label}
+            </button>
+          ))}
+          <span style={{ fontSize: 10, color: "var(--text3)", marginLeft: 4 }}>
+            (polling every 3s)
+          </span>
+        </div>
+        <button className="btn btn-sm" onClick={load}><Icon path={icons.refresh} size={12} /> Refresh</button>
       </div>
 
       {loading ? (
-        <div style={{ textAlign: "center", padding: 40, color: "var(--text2)" }}>Loading cameras...</div>
+        <div style={{ textAlign: "center", padding: 40, color: "var(--text2)" }}>Loading cameras…</div>
       ) : cameras.length === 0 ? (
-        <div className="empty">No cameras found. Please add cameras under the Cameras tab.</div>
+        <div className="empty">No cameras found. Add cameras under the Cameras tab.</div>
       ) : (
         <div className="pulse-grid">
           {cameras.map(cam => (
-            <CameraPulseCard key={cam.id} camera={cam} />
+            <CameraPulseCard key={cam.id} camera={cam} rangePoints={selectedRange.points} />
           ))}
         </div>
       )}
