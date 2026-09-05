@@ -26,8 +26,23 @@ os.environ.setdefault(
 )
 
 # ── CONFIG ────────────────────────────────────────────────────────
-SERVER_URL             = "http://localhost:8001"   # Local FRS server (AI_MODE=1) — port 8001 (8000 = Django)
-# Change to your Render URL ONLY if running cameras separate from the AI server:
+# SERVER_URL: read from .env file so you never need to edit this code.
+# To change the server, just update FRS_SERVER_URL in your .env file.
+def _load_env():
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    if os.path.exists(env_path):
+        for line in open(env_path, encoding="utf-8-sig"):
+            l = line.strip()
+            if l and not l.startswith("#") and "=" in l:
+                k, v = l.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+_load_env()
+
+SERVER_URL = os.environ.get(
+    "FRS_SERVER_URL",
+    os.environ.get("SERVER_URL", "http://localhost:8001")
+)
+print(f"[CameraProcessor] Server URL: {SERVER_URL}")
 # SERVER_URL = "https://frs-ai-model.onrender.com"
 PROCESS_EVERY_N_FRAMES = 5      # GPU recognition every 5th frame (less load)
 LIVE_EVERY_N_FRAMES    = 2      # Live push every 2nd frame
