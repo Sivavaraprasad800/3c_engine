@@ -22,39 +22,12 @@ dist/
 *.bat
 *.ps1
 
-# ── Research & analysis scripts (local only) ──
-analyze_4_events.py
-analyze_mani_images.py
-analyze_unknown_events.py
-best_technique_test.py
-compare_3mp_vs_8mp.py
-compare_detected_enhancement.py
-compare_enhancement.py
-deep_confidence_research.py
-generate_report.py
-gfpgan_compare.py
-guess_camera.py
-sharpness_research.py
-test_avg_100_people.py
-test_bestframe_avg.py
-test_match_all_templates.py
-patch_basicsr.py
-
-# ── Check / diagnose scripts (local only) ──
-check_dashboard_cards.py
-check_dome_cameras.py
-check_persons_enrolled.py
-check_same_person.py
-check_unknown_pool.py
-check_who.py
-debug_detection.py
+# ── Scripts subfolders (research/debug/migration/tools — local only) ──
+scripts/
 
 # ── Result text files ──
 *_result.txt
 *.txt
-
-# ── Report output folder ──
-avg_report/
 
 # ── Data / snapshots (local) ──
 data/
