@@ -1977,13 +1977,32 @@ def start_camera_api(camera_id: str):
 
 @app.post("/api/v1/cameras/{camera_id}/stop")
 def stop_camera_api(camera_id: str):
+    """Stop camera and save enabled=False to DB so it stays stopped after restart."""
     stop_camera(camera_id)
+    # FIX: persist the stopped state to DB — so server restart doesn't auto-start it again
+    try:
+        cameras = db_get_cameras()
+        cam = next((c for c in cameras if c["id"] == camera_id), None)
+        if cam:
+            db_upsert_camera({**cam, "enabled": False})
+    except Exception as e:
+        print(f"[Server] Could not persist camera stop state: {e}")
     return {"success": True, "status": "stopped"}
 
-# ── FLOOR FLOW MAP (camera layout canvas) ───────────────────
-class FlowLink(BaseModel):
-    from_cam: str
-    to_cam: str
+@app.post("/api/v1/cameras/{camera_id}/start")
+def start_camera_api(camera_id: str):
+    """Start camera and save enabled=True to DB so it persists after restart."""
+    cameras = db_get_cameras()
+    cam = next((c for c in cameras if c["id"] == camera_id), None)
+    if not cam:
+        raise HTTPException(404, "Camera not found")
+    # FIX: persist enabled=True so restart keeps it running
+    try:
+        db_upsert_camera({**cam, "enabled": True})
+    except Exception as e:
+        print(f"[Server] Could not persist camera start state: {e}")
+    start_camera(cam)
+    return {"success": True, "status": "started"}
 
 class FlowSave(BaseModel):
     flows: list  # [{"from_cam": "cam-201", "to_cam": "202"}, ...]
