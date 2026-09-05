@@ -5180,9 +5180,19 @@ function CamerasPage() {
   const [liveCamera, setLiveCamera] = useState(null);
   const [configCamera, setConfigCamera] = useState(null);
   const [pulseCam, setPulseCam] = useState(null);
+  // FIX: moved these two hooks BEFORE the early return — React rules of hooks
+  const [cameraMode, setCameraMode] = useState("3mp");
+  const [modeLoading, setModeLoading] = useState(false);
 
   const load = () => fetchAPI("/api/v1/cameras").then(d => d && setCameras(d.cameras || []));
   useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, []);
+
+  // Load camera mode on mount
+  useEffect(() => {
+    fetchAPI("/api/v1/camera-mode").then(d => {
+      if (d && d.camera_mode) setCameraMode(d.camera_mode);
+    });
+  }, []);
 
   if (configCamera) {
     return <CameraConfigPage
@@ -5191,38 +5201,6 @@ function CamerasPage() {
       onSave={() => { load(); setConfigCamera(null); }}
     />;
   }
-
-  const openAdd = () => { setEditing(null); setForm({ id: "", name: "", rtsp_url: "", camera_type: "frs", fps: 30, enabled: true, notes: "", room_id: "" }); setShowModal(true); };
-  const openEdit = (cam) => { setEditing(cam.id); setForm({ ...cam }); setShowModal(true); };
-
-  const save = async () => {
-    if (!form.id || !form.name || !form.rtsp_url) return;
-    setSaving(true);
-    let res;
-    if (editing) res = await fetchAPI(`/api/v1/cameras/${encodeURIComponent(editing)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) });
-    else res = await fetchAPI("/api/v1/cameras", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) });
-    if (!res || !res.success) {
-      alert(`Failed to ${editing ? "update" : "add"} camera — check the server console for details.`);
-      setSaving(false);
-      return;
-    }
-    await load(); setSaving(false); setShowModal(false);
-  };
-
-  const remove = async (id) => { if (!window.confirm("Delete camera?")) return; const res = await fetchAPI(`/api/v1/cameras/${encodeURIComponent(id)}`, { method: "DELETE" }); if (!res || !res.success) alert("Failed to delete camera — check the server console."); load(); };
-  const toggle = async (cam) => { await fetchAPI(`/api/v1/cameras/${encodeURIComponent(cam.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !cam.enabled }) }); load(); };
-  const toggleRun = async (cam) => { await fetchAPI(`/api/v1/cameras/${encodeURIComponent(cam.id)}/${cam.running ? "stop" : "start"}`, { method: "POST" }); setTimeout(load, 500); };
-
-  // Camera mode state
-  const [cameraMode, setCameraMode] = useState("3mp");
-  const [modeLoading, setModeLoading] = useState(false);
-
-  // Load camera mode on mount
-  useEffect(() => {
-    fetchAPI("/api/v1/camera-mode").then(d => {
-      if (d && d.camera_mode) setCameraMode(d.camera_mode);
-    });
-  }, []);
 
   const switchMode = async (mode) => {
     if (!window.confirm(`Switch to ${mode.toUpperCase()} mode? Cameras will restart.`)) return;

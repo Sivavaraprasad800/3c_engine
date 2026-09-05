@@ -2608,7 +2608,68 @@ def bulk_enroll_from_folders(req: BulkEnrollRequest):
         if not images:
             return {"name": person_name, "enrolled": 0, "skipped": 0, "error": "no images"}
 
-        # Get or create person ID
+        # ── STEP 1: Load all images and check each one ──────────
+        MIN_IMAGES_REQUIRED = 3   # minimum images to enroll
+        image_errors = []         # per-image error report
+        loaded_images = []
+
+        for img_path in images:
+            img = cv2.imread(str(img_path))
+            if img is None:
+                image_errors.append({"file": img_path.name, "error": "cannot read image file"})
+                continue
+            # Quick quality check before even trying to enroll
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            lap  = cv2.Laplacian(gray, cv2.CV_64F).var()
+            bright = float(np.mean(gray))
+            if lap < 10:
+                image_errors.append({"file": img_path.name, "error": f"image too blurry (sharpness={lap:.0f}, need >10)"})
+                continue
+            if bright < 30:
+                image_errors.append({"file": img_path.name, "error": f"image too dark (brightness={bright:.0f}, need >30)"})
+                continue
+            # Check face detectable
+            faces_check = engine.app.get(img)
+            if not faces_check:
+                image_errors.append({"file": img_path.name, "error": "no face detected in image"})
+                continue
+            loaded_images.append((img_path.name, img))
+
+        # ── STEP 2: Minimum image count check ───────────────────
+        if len(loaded_images) < MIN_IMAGES_REQUIRED:
+            return {
+                "name": person_name, "enrolled": 0, "skipped": len(images),
+                "error": f"Need at least {MIN_IMAGES_REQUIRED} valid images, only {len(loaded_images)} passed quality check",
+                "image_errors": image_errors,
+            }
+
+        # ── STEP 3: Cross-image same-person verification ────────
+        img_arrays = [img for _, img in loaded_images]
+        clean_imgs, rejected_imgs, verify_report = engine.verify_same_person(
+            img_arrays, min_similarity=0.30
+        )
+
+        # Map rejected images back to filenames for reporting
+        rejected_names = []
+        for img_arr in rejected_imgs:
+            for fname, img in loaded_images:
+                if img is img_arr:
+                    rejected_names.append(fname)
+                    image_errors.append({
+                        "file": fname,
+                        "error": f"does not match other images of this person (different person or bad photo)"
+                    })
+
+        if len(clean_imgs) < MIN_IMAGES_REQUIRED:
+            return {
+                "name": person_name, "enrolled": 0, "skipped": len(images),
+                "error": f"Only {len(clean_imgs)} images verified as same person (need {MIN_IMAGES_REQUIRED}). "
+                         f"{len(rejected_imgs)} image(s) rejected as different person.",
+                "image_errors": image_errors,
+                "verify_report": verify_report,
+            }
+
+        # ── STEP 4: Enroll the verified clean images ────────────
         persons = db_get_persons(watchlist=watchlist)
         existing = next((p for p in persons if p["name"].lower() == person_name.lower()), None)
         person_id = existing["id"] if existing else db_next_person_id()
@@ -2620,11 +2681,7 @@ def bulk_enroll_from_folders(req: BulkEnrollRequest):
         skipped  = 0
         first_img_array = None
 
-        for img_path in images:
-            img = cv2.imread(str(img_path))
-            if img is None:
-                skipped += 1
-                continue
+        for img in clean_imgs:
             result = engine.enroll(img, person_id=person_id, name=person_name, watchlist=watchlist)
             if result.get("success"):
                 if result.get("note") != "duplicate_skipped":
@@ -2634,6 +2691,11 @@ def bulk_enroll_from_folders(req: BulkEnrollRequest):
                 else:
                     skipped += 1
             else:
+                err_reason = result.get("error", "unknown")
+                # Find which filename this was
+                for fname, img_arr in loaded_images:
+                    if img_arr is img:
+                        image_errors.append({"file": fname, "error": f"enrollment failed: {err_reason}"})
                 skipped += 1
 
         # Save/update person record in DB with photo + training images
@@ -2645,21 +2707,25 @@ def bulk_enroll_from_folders(req: BulkEnrollRequest):
                 "watchlist": watchlist,
                 "created_at": existing.get("created_at") if existing else datetime.now().isoformat(),
             }, photo_array=first_img_array)
-            # Store all training images in DB (max 5)
             if enrolled > 0:
                 if req.overwrite:
                     db_clear_person_training_images(person_id)
-                for img_path in images:
-                    img = cv2.imread(str(img_path))
-                    if img is not None:
-                        db_add_person_training_image(person_id, img, max_images=5)
+                for img in clean_imgs:
+                    db_add_person_training_image(person_id, img, max_images=5)
 
         if enrolled > 0:
             total_persons += 1
             total_images  += enrolled
 
-        return {"name": person_name, "watchlist": watchlist,
-                "enrolled": enrolled, "skipped": skipped}
+        return {
+            "name": person_name, "watchlist": watchlist,
+            "enrolled": enrolled, "skipped": skipped,
+            "total_images_provided": len(images),
+            "passed_quality": len(loaded_images),
+            "passed_same_person": len(clean_imgs),
+            "rejected_different_person": len(rejected_imgs),
+            "image_errors": image_errors if image_errors else None,
+        }
 
     # Walk train_images/ — support both flat and watchlist-subdir structures
     for item in sorted(TRAIN_DIR.iterdir()):
