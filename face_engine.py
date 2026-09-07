@@ -439,9 +439,9 @@ class FaceRecognitionEngine:
         # ONNX session options for maximum CPU throughput
         so = ort.SessionOptions()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        so.intra_op_num_threads = 2    # threads per inference
-        so.inter_op_num_threads = 4    # parallel operations
-        so.execution_mode = ort.ExecutionMode.ORT_PARALLEL
+        so.intra_op_num_threads = 2    # threads per inference — limit to avoid CPU saturation
+        so.inter_op_num_threads = 1    # serial op execution — less contention with multiple cameras
+        so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL  # sequential = lower peak CPU
 
         # Use buffalo_l — MATCHES the model used to build face_index.faiss
         # buffalo_s would produce DIFFERENT embeddings → low similarity → Unknown

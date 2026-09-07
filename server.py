@@ -1259,11 +1259,18 @@ def camera_worker(cam: dict, stop_event: threading.Event):
     max_pitch  = cam.get("max_pitch", 15)
     det_range  = cam.get("detection_range", 6.5)
     send_img   = cam.get("send_image", True)
-    # MAXIMUM CAPTURE — process EVERY frame for AI recognition
-    # Ensures no face is ever missed in a 3-second window
-    effective_data_freq = 1   # every single frame goes to AI recognition
 
-    print(f"[Camera:{cam_id}] Config — Target FPS: {target_fps}, AI Rate: ~{target_fps//effective_data_freq} FPS, Zone pts: {len(det_zone)}, Face conf: {face_conf}")
+    # ── AI Frame Rate Control ─────────────────────────────────────
+    # Use camera's data_frequency setting to control how often AI runs.
+    # data_frequency=2 → AI every 2nd frame (~12 fps AI at 25fps capture)
+    # data_frequency=5 → AI every 5th frame (~5 fps AI at 25fps capture) ← recommended
+    # data_frequency=1 → AI every frame (max quality, max CPU)
+    # Default to 5 for low CPU usage while still detecting faces reliably.
+    _cfg_freq = int(cam.get("data_frequency") or 5)
+    effective_data_freq = max(1, _cfg_freq)   # respect camera config, min 1
+
+    _ai_fps = round(target_fps / effective_data_freq, 1)
+    print(f"[Camera:{cam_id}] Config — Target FPS: {target_fps}, AI Rate: ~{_ai_fps} FPS (every {effective_data_freq} frames), Zone pts: {len(det_zone)}, Face conf: {face_conf}")
     print(f"[Camera:{cam_id}] Starting — {rtsp_url}")
 
     # ── Original FIFO queue architecture (proven 25-30 FPS) ──────
