@@ -2017,11 +2017,21 @@ def db_get_system_settings() -> dict:
     res = dict(DEFAULT_SETTINGS)
     try:
         with engine.connect() as conn:
-            rows = conn.execute(
-                select(settings_table).where(settings_table.c.org_id == org)
-            ).fetchall()
+            # Try org_id-filtered query first; fall back to unfiltered if column not yet migrated
+            try:
+                rows = conn.execute(
+                    select(settings_table).where(settings_table.c.org_id == org)
+                ).fetchall()
+            except Exception:
+                # org_id column doesn't exist yet — read all settings (pre-migration fallback)
+                rows = conn.execute(
+                    text("SELECT key_name, value FROM `3c_eng_settings`")
+                ).fetchall()
             for r in rows:
-                res[r.key_name] = r.value
+                if hasattr(r, 'key_name'):
+                    res[r.key_name] = r.value
+                elif len(r) >= 2:
+                    res[r[0]] = r[1]
     except Exception as e:
         print(f"[DB] Error loading system settings: {e}")
     return res
@@ -2031,23 +2041,31 @@ def db_save_system_setting(key: str, value: str):
     org = get_org_id()
     try:
         with engine.connect() as conn:
-            row = conn.execute(
-                select(settings_table).where(
-                    and_(settings_table.c.org_id == org,
-                         settings_table.c.key_name == key)
-                )
-            ).fetchone()
-            if row:
-                conn.execute(
-                    settings_table.update()
-                    .where(and_(settings_table.c.org_id == org,
-                                settings_table.c.key_name == key))
-                    .values(value=str(value))
-                )
-            else:
-                conn.execute(
-                    settings_table.insert().values(org_id=org, key_name=key, value=str(value))
-                )
+            # Try with org_id; fall back to legacy single-key if column not yet migrated
+            try:
+                row = conn.execute(
+                    select(settings_table).where(
+                        and_(settings_table.c.org_id == org,
+                             settings_table.c.key_name == key)
+                    )
+                ).fetchone()
+                if row:
+                    conn.execute(
+                        settings_table.update()
+                        .where(and_(settings_table.c.org_id == org,
+                                    settings_table.c.key_name == key))
+                        .values(value=str(value))
+                    )
+                else:
+                    conn.execute(
+                        settings_table.insert().values(org_id=org, key_name=key, value=str(value))
+                    )
+            except Exception:
+                # Pre-migration fallback — no org_id column yet
+                conn.execute(text(
+                    "INSERT INTO `3c_eng_settings` (key_name, value) VALUES (:k, :v) "
+                    "ON DUPLICATE KEY UPDATE value = :v"
+                ), {"k": key, "v": str(value)})
             conn.commit()
     except Exception as e:
         print(f"[DB] Error saving system setting {key}: {e}")

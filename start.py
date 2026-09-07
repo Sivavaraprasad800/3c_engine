@@ -80,4 +80,12 @@ except OSError:
     print(f"[start] ➜ To RESTART: stop the other one first (Ctrl+C in its terminal), then run: python start.py")
     sys.exit(1)
 
-uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)
+# ── Handle PyInstaller bundled exe vs normal python run ──────────────────────
+import sys as _sys
+if getattr(_sys, 'frozen', False):
+    # Running as PyInstaller exe — import app object directly (no string import)
+    from server import app as _frs_app
+    uvicorn.run(_frs_app, host="0.0.0.0", port=port, reload=False)
+else:
+    # Normal python start.py — use string for cleaner error messages
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)

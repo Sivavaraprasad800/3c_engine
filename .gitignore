@@ -48,5 +48,9 @@ train_images/
 Thumbs.db
 .freebuff/
 
+# ── PyInstaller output ──
+exe_output/
+build_tmp/
+
 # ── Misc ──
 d
