@@ -85,16 +85,53 @@ def open_window():
     ok  = bool(org) and org not in ("","default")
     url   = APP_URL if ok else f"{APP_URL}/#setup"
     title = f"3C Engine — {org.replace('_',' ').title()}" if ok else "3C Engine — Setup"
-    webview.create_window(title, url, width=1280, height=800, min_size=(900,600), resizable=True, text_select=False)
+
+    # Show a loading page that auto-connects when server is ready
+    loading_html = f"""<!DOCTYPE html><html>
+<head><style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{background:#14171c;color:#fff;display:flex;flex-direction:column;
+     align-items:center;justify-content:center;height:100vh;font-family:sans-serif}}
+.logo{{width:72px;height:72px;background:#4a9eff;border-radius:16px;
+       display:flex;align-items:center;justify-content:center;
+       font-size:28px;font-weight:700;margin-bottom:24px}}
+h1{{font-size:22px;font-weight:700;margin-bottom:8px}}
+p{{font-size:13px;color:#8899aa;margin-bottom:32px}}
+.dots{{display:flex;gap:8px}}
+.dot{{width:10px;height:10px;background:#4a9eff;border-radius:50%;
+      animation:b 1.2s infinite}}
+.dot:nth-child(2){{animation-delay:.2s}}
+.dot:nth-child(3){{animation-delay:.4s}}
+@keyframes b{{0%,60%,100%{{transform:translateY(0)}}30%{{transform:translateY(-12px)}}}}
+</style>
+<script>
+function check(){{
+  fetch('{APP_URL}/api/v1/health')
+    .then(r=>r.json())
+    .then(d=>{{if(d.status==='ok')window.location.href='{url}';else setTimeout(check,2000);
+              document.getElementById('msg').textContent='Loading AI models...';}})
+    .catch(()=>{{document.getElementById('msg').textContent='Starting server...';setTimeout(check,2000);}});
+}}
+window.onload=()=>setTimeout(check,500);
+</script></head>
+<body>
+<div class="logo">3C</div>
+<h1>3C Engine FRS</h1>
+<p id="msg">Starting up...</p>
+<div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+</body></html>"""
+
+    webview.create_window(title, html=loading_html, width=1280, height=800,
+                           min_size=(900,600), resizable=True, text_select=False)
     webview.start(debug=False, gui="edgechromium", http_server=False)
     log.info("Window closed — server still running in background")
 
 def main():
     log.info(f"=== FRS 3C Engine Launcher {datetime.now().isoformat()} ===")
     start_server()
-    log.info("Waiting for server...")
-    if not wait_server(90):
-        log.error("Server not ready after 90s")
+    # Open window IMMEDIATELY with loading screen — no wait
+    # The loading screen auto-connects when server is ready
+    log.info("Opening app window (loading screen will connect to server when ready)...")
     open_window()
 
 if __name__ == "__main__":
