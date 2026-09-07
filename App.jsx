@@ -3932,19 +3932,29 @@ function HumansPage() {
   };
 
   const handleEnroll = async () => {
-    if (!images.length || !name.trim()) return;
+    if (images.length < 5 || !name.trim()) return;
     setLoading(true); setResults([]); setProgress({ done: 0, total: images.length });
     const res = [];
+    let lastResponse = null;
     for (let i = 0; i < images.length; i++) {
       const fd = new FormData(); fd.append("file", images[i]);
       try {
         const r = await fetch(`${API_BASE}/api/v1/frd/enroll?name=${encodeURIComponent(name)}&watchlist=${enrollWatchlist}`, { method: "POST", body: fd });
         const d = await r.json();
-        res.push({ success: r.ok, msg: `Photo ${i + 1}: ${r.ok ? "✓ Enrolled" : d.detail || "Failed"}` });
+        lastResponse = d;
+        res.push({
+          success: r.ok,
+          msg: r.ok
+            ? (d.message || `Photo ${i + 1}: ✓ Enrolled (${d.image_number}/${5})`)
+            : `Photo ${i + 1}: ${d.detail || "Failed"}`
+        });
       } catch { res.push({ success: false, msg: `Photo ${i + 1}: Server unreachable` }); }
       setProgress({ done: i + 1, total: images.length }); setResults([...res]);
     }
-    if (res.some(r => r.success)) { load(); setName(""); setImages([]); setPreviews(p => { p.forEach(u => URL.revokeObjectURL(u)); return []; }); }
+    if (res.some(r => r.success)) {
+      load();
+      setName(""); setImages([]); setPreviews(p => { p.forEach(u => URL.revokeObjectURL(u)); return []; });
+    }
     setLoading(false);
   };
 
@@ -4091,11 +4101,28 @@ function HumansPage() {
                   </select>
                 </div>
               </div>
-              <div className="drop-zone" onClick={() => fileRef.current?.click()}>
+              <div className="drop-zone" onClick={() => images.length < 5 && fileRef.current?.click()} style={{ opacity: images.length >= 5 ? 0.5 : 1, cursor: images.length >= 5 ? "not-allowed" : "pointer" }}>
                 <input ref={fileRef} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={e => handleFiles(e.target.files)} />
                 <Icon path={icons.upload} size={22} color="var(--text3)" />
-                <div className="drop-zone-text">Drop up to 5 photos or click to browse</div>
+                <div className="drop-zone-text">
+                  {images.length >= 5 ? "5 photos selected — ready to enroll" : `Select ${5 - images.length} more photo${5 - images.length !== 1 ? "s" : ""} (need 5 total)`}
+                </div>
               </div>
+
+              {/* 5-slot image progress indicator */}
+              <div style={{ display: "flex", gap: 6, marginTop: 10, alignItems: "center" }}>
+                {[0,1,2,3,4].map(i => (
+                  <div key={i} style={{
+                    flex: 1, height: 4, borderRadius: 2,
+                    background: i < previews.length ? "var(--accent)" : "var(--surface2)",
+                    transition: "background .2s"
+                  }} />
+                ))}
+                <span style={{ fontSize: 10, color: previews.length >= 5 ? "var(--green)" : "var(--text3)", whiteSpace: "nowrap", marginLeft: 4 }}>
+                  {previews.length}/5 {previews.length >= 5 ? "✓ Ready" : "required"}
+                </span>
+              </div>
+
               {previews.length > 0 && (
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 6, marginTop: 10 }}>
                   {previews.map((src, i) => (
@@ -4122,8 +4149,16 @@ function HumansPage() {
             </div>
             <div className="modal-footer">
               <button className="btn" onClick={() => setShowEnroll(false)}>Cancel</button>
-              <button className="btn btn-primary" disabled={!images.length || !name.trim() || loading} onClick={handleEnroll}>
-                {loading ? `Enrolling ${progress.done}/${progress.total}...` : "Add Human"}
+              <button className="btn btn-primary"
+                disabled={images.length < 5 || !name.trim() || loading}
+                onClick={handleEnroll}
+                title={images.length < 5 ? `Need ${5 - images.length} more photo(s)` : ""}
+              >
+                {loading
+                  ? `Enrolling ${progress.done}/${progress.total}...`
+                  : images.length < 5
+                    ? `Need ${5 - images.length} more photo${5 - images.length !== 1 ? "s" : ""}`
+                    : "Enroll Person"}
               </button>
             </div>
           </div>

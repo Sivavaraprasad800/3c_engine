@@ -2182,6 +2182,8 @@ async def detect_faces(file: UploadFile = File(...), min_conf: float = Query(0.5
     return {"count": len(result_faces), "detections": result_faces}
 
 # ── ENROLLMENT ──────────────────────────────────────────────
+MIN_ENROLL_IMAGES = 5   # minimum images required before person is fully active
+
 @app.post("/api/v1/frd/enroll")
 async def enroll_face(
     file: UploadFile = File(...),
@@ -2204,7 +2206,6 @@ async def enroll_face(
         raise HTTPException(400, result.get("error", "Enrollment failed"))
 
     # ── Store in DB only — no disk write ──────────────────────
-    # 1. Save person record with display photo
     db_upsert_person({
         "id":        person_id,
         "name":      name,
@@ -2213,12 +2214,27 @@ async def enroll_face(
         "created_at": datetime.now().isoformat(),
     }, photo_array=image)
 
-    # 2. Append training image to DB (max 5 kept per person)
+    # Append training image (max 5 kept per person)
     img_count = db_add_person_training_image(person_id, image, max_images=5)
 
-    return {"person_id": person_id, "name": name,
-            "watchlist": watchlist, "image_number": img_count,
-            "total_enrolled": result.get("total", 0)}
+    # Tell the UI how many more images are still needed
+    images_needed = max(0, MIN_ENROLL_IMAGES - img_count)
+    ready = img_count >= MIN_ENROLL_IMAGES
+
+    return {
+        "person_id":     person_id,
+        "name":          name,
+        "watchlist":     watchlist,
+        "image_number":  img_count,
+        "total_enrolled": result.get("total", 0),
+        "images_needed": images_needed,
+        "enrollment_complete": ready,
+        "message": (
+            f"✅ Enrolled! {img_count} images saved. Person is active."
+            if ready else
+            f"Image {img_count}/{MIN_ENROLL_IMAGES} saved. Need {images_needed} more image(s) for full enrollment."
+        )
+    }
 
 # ── EVENTS ──────────────────────────────────────────────────
 @app.get("/api/v1/events")
@@ -2611,7 +2627,7 @@ def bulk_enroll_from_folders(req: BulkEnrollRequest):
             return {"name": person_name, "enrolled": 0, "skipped": 0, "error": "no images"}
 
         # ── STEP 1: Load all images and check each one ──────────
-        MIN_IMAGES_REQUIRED = 3   # minimum images to enroll
+        MIN_IMAGES_REQUIRED = 5   # minimum 5 images required for enrollment
         image_errors = []         # per-image error report
         loaded_images = []
 
