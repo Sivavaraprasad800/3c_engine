@@ -54,10 +54,14 @@ hiddenimports = [
     "pydantic", "pydantic.v1", "annotated_types", "typing_extensions",
     # Multipart / forms
     "multipart", "python_multipart", "multipart.multipart",
-    # Pillow (for tray icon)
-    "PIL", "PIL.Image", "PIL.ImageDraw", "PIL.ImageFont",
-    # Pystray (system tray)
+    # Pystray (system tray) — kept for future use
     "pystray", "pystray._win32",
+    # Pillow (for icon)
+    "PIL", "PIL.Image", "PIL.ImageDraw", "PIL.ImageFont",
+    # PyWebView (native app window — no browser needed)
+    "webview", "webview.platforms", "webview.platforms.winforms",
+    "webview.platforms.edgechromium",
+    "clr", "System", "System.Windows.Forms",
     # Misc
     "email_validator", "dotenv", "pickle", "json", "threading", "pathlib",
     "webbrowser", "subprocess", "logging",
