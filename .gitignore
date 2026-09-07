@@ -46,6 +46,7 @@ train_images/
 # ── OS files ──
 .DS_Store
 Thumbs.db
+.freebuff/
 
 # ── Misc ──
 d

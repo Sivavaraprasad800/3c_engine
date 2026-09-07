@@ -1658,7 +1658,9 @@ def health():
                  "visitor_embeddings": 0, "unique_persons": 0}
         ai_ready = False
 
+    from database import get_org_id
     return {"status": "ok", **stats, "ai_ready": ai_ready,
+            "org_id": get_org_id(),
             "running_cameras": running, "camera_fps": camera_fps,
             "timestamp": datetime.now().isoformat()}
 

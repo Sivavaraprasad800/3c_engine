@@ -5462,7 +5462,14 @@ export default function App() {
         <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
           <div className="sidebar-brand">
             <div className="brand-logo">FRS</div>
-            <div className="brand-name">FRD System</div>
+            <div>
+              <div className="brand-name">3C Engine</div>
+              {health?.org_id && (
+                <div style={{ fontSize: 9, color: "var(--text3)", textTransform: "uppercase", letterSpacing: ".06em", marginTop: 1 }}>
+                  {health.org_id}
+                </div>
+              )}
+            </div>
           </div>
           <nav className="nav">
             {nav.map(n => (
@@ -5479,6 +5486,9 @@ export default function App() {
               <div className={`status-dot ${serverOk === false ? "off" : ""}`} />
               <span>{serverOk === null ? "Connecting..." : serverOk ? "Server Online" : "Server Offline"}</span>
             </div>
+            {health?.ai_ready === false && (
+              <div style={{ fontSize: 10, color: "var(--orange)", marginTop: 3 }}>⚠ AI engine offline</div>
+            )}
             {health?.camera_fps && Object.entries(health.camera_fps).map(([cid, fps]) => (
               <div key={cid} style={{ fontSize: 10, color: "var(--green)", marginTop: 2 }}>
                 {cid}: {fps > 0 ? `${fps} fps` : "connected"}
