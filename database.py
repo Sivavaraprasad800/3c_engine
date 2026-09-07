@@ -202,10 +202,27 @@ except Exception:
 DATABASE_USER = os.environ.get("DB_USER", "3c_dev_user")
 metadata = MetaData()
 
+# ─── TENANT / ORG IDENTITY ────────────────────────────────────
+# Each installation sets ORG_ID in .env — default "default" for backwards compat.
+# All queries filter by this value so multiple sites can share one MySQL DB.
+_ORG_ID: Optional[str] = None
+
+def get_org_id() -> str:
+    """Return the current tenant org_id. Reads from env once and caches."""
+    global _ORG_ID
+    if _ORG_ID is None:
+        _ORG_ID = os.environ.get("ORG_ID", "default").strip().lower()
+        if _ORG_ID == "default":
+            print("[DB] ORG_ID not set in .env — using 'default'. Set ORG_ID=your_org in .env for multi-tenant.")
+        else:
+            print(f"[DB] Tenant org_id = '{_ORG_ID}'")
+    return _ORG_ID
+
 # ─── SCHEMA ───────────────────────────────────────────────────
 
 persons_table = Table("3c_eng_persons", metadata,
     Column("id",                    Integer,  primary_key=True),
+    Column("org_id",                String(100), nullable=True, default="default"),
     Column("name",                  String(200), nullable=False),
     Column("watchlist",             String(50),  default="employee"),
     Column("company",               String(200), nullable=True),        # company/organisation
@@ -218,6 +235,7 @@ persons_table = Table("3c_eng_persons", metadata,
 
 cameras_table = Table("3c_eng_cameras", metadata,
     Column("id",             String(100), primary_key=True),
+    Column("org_id",         String(100), nullable=True, default="default"),
     Column("name",           String(200), nullable=False),
     Column("rtsp_url",       String(500), nullable=False),
     Column("camera_type",    String(50),  default="checkin"),
@@ -248,6 +266,7 @@ cameras_table = Table("3c_eng_cameras", metadata,
 
 events_table = Table("3c_eng_events", metadata,
     Column("id",            Integer, primary_key=True, autoincrement=True),
+    Column("org_id",        String(100), nullable=True, default="default"),
     Column("event_id",      String(100), nullable=True),
     Column("camera_id",     String(100), nullable=True),
     Column("person_id",     Integer,     nullable=True),
@@ -267,6 +286,7 @@ events_table = Table("3c_eng_events", metadata,
 
 attendance_table = Table("3c_eng_attendance", metadata,
     Column("id",            Integer, primary_key=True, autoincrement=True),
+    Column("org_id",        String(100), nullable=True, default="default"),
     Column("person_id",     Integer,     nullable=True),
     Column("person_name",   String(200), nullable=True),
     Column("camera_id",     String(100), nullable=True),
@@ -292,6 +312,7 @@ alerts_table = Table("3c_eng_alerts", metadata,
 
 unknown_persons_table = Table("3c_eng_unknown_persons", metadata,
     Column("id",             Integer, primary_key=True, autoincrement=True),
+    Column("org_id",         String(100), nullable=True, default="default"),
     Column("tracking_id",    String(200), nullable=True),
     Column("first_seen",     String(50),  nullable=True),
     Column("last_seen",      String(50),  nullable=True),
@@ -310,8 +331,9 @@ unknown_persons_table = Table("3c_eng_unknown_persons", metadata,
 )
 
 settings_table = Table("3c_eng_settings", metadata,
+    Column("org_id",     String(100), primary_key=True, default="default"),
     Column("key_name",   String(100), primary_key=True),
-    Column("value", Text,        nullable=True),
+    Column("value",      Text,        nullable=True),
 )
 
 # KloudSpot ↔ Our DB person entity ID mapping table
@@ -421,6 +443,13 @@ def init_db():
             "ALTER TABLE `3c_eng_cameras` ADD COLUMN count_line TEXT",
             "ALTER TABLE `3c_eng_cameras` ADD COLUMN count_inside_pt TEXT",
             "ALTER TABLE `3c_eng_events` ADD COLUMN tracker_id VARCHAR(200)",
+            # ── Multi-tenant org_id columns ──────────────────────────────────────
+            "ALTER TABLE `3c_eng_persons` ADD COLUMN org_id VARCHAR(100) DEFAULT 'default'",
+            "ALTER TABLE `3c_eng_cameras` ADD COLUMN org_id VARCHAR(100) DEFAULT 'default'",
+            "ALTER TABLE `3c_eng_events` ADD COLUMN org_id VARCHAR(100) DEFAULT 'default'",
+            "ALTER TABLE `3c_eng_attendance` ADD COLUMN org_id VARCHAR(100) DEFAULT 'default'",
+            "ALTER TABLE `3c_eng_unknown_persons` ADD COLUMN org_id VARCHAR(100) DEFAULT 'default'",
+            "ALTER TABLE `3c_eng_settings` ADD COLUMN org_id VARCHAR(100) DEFAULT 'default'",
         ]
         for _sql in _safe_alter:
             try:
@@ -437,7 +466,13 @@ def init_db():
             "CREATE INDEX idx_events_person ON `3c_eng_events` (person_id)",
             "CREATE UNIQUE INDEX idx_events_tracker ON `3c_eng_events` (tracker_id)",
             "CREATE INDEX idx_unk_last_seen ON `3c_eng_unknown_persons` (last_seen)",
-            "CREATE INDEX idx_att_date ON `3c_eng_attendance` (date)"
+            "CREATE INDEX idx_att_date ON `3c_eng_attendance` (date)",
+            # Multi-tenant indexes
+            "CREATE INDEX idx_persons_org ON `3c_eng_persons` (org_id)",
+            "CREATE INDEX idx_cameras_org ON `3c_eng_cameras` (org_id)",
+            "CREATE INDEX idx_events_org ON `3c_eng_events` (org_id)",
+            "CREATE INDEX idx_att_org ON `3c_eng_attendance` (org_id)",
+            "CREATE INDEX idx_unk_org ON `3c_eng_unknown_persons` (org_id)",
         ]:
             try:
                 conn.execute(text(_idx))
@@ -792,8 +827,9 @@ def _to_json(value) -> str:
 # ─── PERSONS ──────────────────────────────────────────────────
 
 def db_get_persons(watchlist: Optional[str] = None) -> List[dict]:
+    org = get_org_id()
     with engine.connect() as conn:
-        q = select(persons_table)
+        q = select(persons_table).where(persons_table.c.org_id == org)
         if watchlist:
             q = q.where(persons_table.c.watchlist == watchlist)
         q = q.order_by(persons_table.c.created_at.desc())
@@ -804,14 +840,19 @@ def db_get_persons(watchlist: Optional[str] = None) -> List[dict]:
 
 def db_upsert_person(person: dict, photo_array=None) -> dict:
     """Insert or update a person. photo_array = numpy image for b64 storage."""
+    org = get_org_id()
     b64 = numpy_to_b64(photo_array) if photo_array is not None else None
     now = datetime.now().isoformat()
     with engine.connect() as conn:
         existing = conn.execute(
-            select(persons_table).where(persons_table.c.id == person["id"])
+            select(persons_table).where(
+                and_(persons_table.c.id == person["id"],
+                     persons_table.c.org_id == org)
+            )
         ).fetchone()
 
         data = {
+            "org_id":       org,
             "name":         person.get("name"),
             "watchlist":    person.get("watchlist", "employee"),
             "company":      person.get("company"),
@@ -824,7 +865,8 @@ def db_upsert_person(person: dict, photo_array=None) -> dict:
         if existing:
             conn.execute(
                 update(persons_table)
-                .where(persons_table.c.id == person["id"])
+                .where(and_(persons_table.c.id == person["id"],
+                            persons_table.c.org_id == org))
                 .values(**data)
             )
         else:
@@ -917,8 +959,11 @@ def db_clear_person_training_images(person_id: int):
 # ─── CAMERAS ──────────────────────────────────────────────────
 
 def db_get_cameras() -> List[dict]:
+    org = get_org_id()
     with engine.connect() as conn:
-        rows = _rows_to_list(conn.execute(select(cameras_table)))
+        rows = _rows_to_list(conn.execute(
+            select(cameras_table).where(cameras_table.c.org_id == org)
+        ))
     for r in rows:
         r["detection_zone"] = _json_field(r.get("detection_zone"), "[]")
         r["entry_zone"] = _json_field(r.get("entry_zone"), None) if r.get("entry_zone") else None
@@ -928,14 +973,19 @@ def db_get_cameras() -> List[dict]:
     return rows
 
 def db_upsert_camera(cam: dict):
+    org = get_org_id()
     now = datetime.now().isoformat()
     zone = _to_json(cam.get("detection_zone", []))
     with engine.connect() as conn:
         existing = conn.execute(
-            select(cameras_table).where(cameras_table.c.id == cam["id"])
+            select(cameras_table).where(
+                and_(cameras_table.c.id == cam["id"],
+                     cameras_table.c.org_id == org)
+            )
         ).fetchone()
 
         data = {
+            "org_id":           org,
             "name":             cam.get("name"),
             "rtsp_url":         cam.get("rtsp_url"),
             "camera_type":      cam.get("camera_type", "checkin"),
@@ -961,7 +1011,10 @@ def db_upsert_camera(cam: dict):
         }
         if existing:
             conn.execute(
-                update(cameras_table).where(cameras_table.c.id == cam["id"]).values(**data)
+                update(cameras_table).where(
+                    and_(cameras_table.c.id == cam["id"],
+                         cameras_table.c.org_id == org)
+                ).values(**data)
             )
         else:
             data["id"]         = cam["id"]
@@ -1216,6 +1269,7 @@ def _make_tracker_id(camera_id, person_id, bbox, timestamp):
 
 def db_save_event(event: dict, snapshot_array=None, shared_conn=None) -> int:
     """Save a recognition event. Dedup by tracker_id — deterministic, no race conditions."""
+    org = get_org_id()
     b64 = numpy_to_b64(snapshot_array) if snapshot_array is not None else None
     _ts = event.get("timestamp", datetime.now().isoformat())
 
@@ -1238,6 +1292,7 @@ def db_save_event(event: dict, snapshot_array=None, shared_conn=None) -> int:
             return _exists[0]  # DUPLICATE — skip
 
         result = conn.execute(insert(events_table).values(
+            org_id       = org,
             event_id     = event.get("event_id"),
             camera_id    = event.get("camera_id"),
             person_id    = event.get("person_id"),
@@ -1264,24 +1319,11 @@ def db_save_event(event: dict, snapshot_array=None, shared_conn=None) -> int:
                 return _do_save(conn)
     except Exception as _err:
         err_str = str(_err).lower()
-        # Unique constraint violation = duplicate tracker_id
         if 'duplicate' in err_str or 'unique' in err_str:
             print(f"[Dedup] tracker_id collision blocked: {_tid[:12]}...")
             return -1
         print(f"[DB] Event save failed: {str(_err)[:80]}")
         return -1
-
-    # ── Mirror to external 3C MySQL DB (fire-and-forget, never raises) ──
-    try:
-        from external_events_db import mirror_event
-        eid = event.get("entity_id") or db_get_entity_id_for_person(event.get("person_id"))
-        ev_copy = dict(event)
-        ev_copy["entity_id"] = eid
-        mirror_event(ev_copy, event_id=event_id, snapshot_b64=b64)
-    except Exception as _mir_err:
-        print(f"[3c_eng] mirror import failed (ignored): {str(_mir_err)[:80]}")
-
-    return event_id
 
 def db_get_events(
     limit: int = 10,
@@ -1295,14 +1337,17 @@ def db_get_events(
     hours: int = 24,
     include_snapshots: bool = False
 ) -> dict:
-    """List events with backend pagination (10 per page by default).
-    Snapshots are EXCLUDED by default to keep payloads tiny and fast."""
+    """List events with backend pagination. Filtered by current org_id tenant."""
     from sqlalchemy import func
+    org = get_org_id()
     cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
     offset = max(0, (page - 1) * limit)
-    
+
     with engine.connect() as conn:
-        base_filters = [events_table.c.timestamp >= cutoff]
+        base_filters = [
+            events_table.c.org_id == org,
+            events_table.c.timestamp >= cutoff,
+        ]
         if camera_id and camera_id != "all":
             base_filters.append(events_table.c.camera_id == camera_id)
         if person_id is not None:
@@ -1319,11 +1364,9 @@ def db_get_events(
                 (events_table.c.person_name.like(s_pattern)) | (events_table.c.camera_id.like(s_pattern))
             )
 
-        # Count total matching rows
         count_q = select(func.count()).select_from(events_table).where(*base_filters)
         total_count = conn.execute(count_q).scalar() or 0
 
-        # Paginated events
         q = select(events_table).where(*base_filters).order_by(events_table.c.timestamp.desc()).offset(offset).limit(limit)
         rows = _rows_to_list(conn.execute(q))
 
@@ -1332,7 +1375,7 @@ def db_get_events(
         if include_snapshots:
             r["snapshot_data_url"] = b64_to_data_url(r.get("snapshot_b64"))
         else:
-            r.pop("snapshot_b64", None)   # keep payload small
+            r.pop("snapshot_b64", None)
 
     total_pages = max(1, (total_count + limit - 1) // limit) if total_count > 0 else 1
     return {
@@ -1414,8 +1457,9 @@ def db_get_attendance(
     person_id: Optional[int] = None,
     limit: int = 200
 ) -> List[dict]:
+    org = get_org_id()
     with engine.connect() as conn:
-        q = select(attendance_table)
+        q = select(attendance_table).where(attendance_table.c.org_id == org)
         if date:
             q = q.where(attendance_table.c.date == date)
         if status:
@@ -1425,14 +1469,15 @@ def db_get_attendance(
         q = q.order_by(attendance_table.c.checkin_time.desc()).limit(limit)
         rows = _rows_to_list(conn.execute(q))
     for r in rows:
-        # keep payload small — thumbnails lazy-load via /api/v1/attendance/{id}/snapshot
         r.pop("snapshot_b64", None)
     return rows
 
 def db_save_attendance(record: dict, snapshot_array=None) -> int:
+    org = get_org_id()
     b64 = numpy_to_b64(snapshot_array) if snapshot_array is not None else None
     with engine.connect() as conn:
         result = conn.execute(insert(attendance_table).values(
+            org_id       = org,
             person_id    = record.get("person_id"),
             person_name  = record.get("person_name"),
             camera_id    = record.get("camera_id"),
@@ -1587,10 +1632,12 @@ def db_purge_old_alerts(keep: int = 1000):
 # ─── UNKNOWN PERSONS ──────────────────────────────────────────
 
 def db_save_unknown(unknown: dict, snapshot_array=None) -> int:
+    org = get_org_id()
     b64 = numpy_to_b64(snapshot_array) if snapshot_array is not None else None
     b64s = [b64] if b64 else []
     with engine.connect() as conn:
         result = conn.execute(insert(unknown_persons_table).values(
+            org_id        = org,
             tracking_id   = unknown.get("tracking_id"),
             first_seen    = unknown.get("first_seen"),
             last_seen     = unknown.get("last_seen"),
@@ -1613,9 +1660,10 @@ def db_get_unknowns(
     search: Optional[str] = None
 ) -> dict:
     from sqlalchemy import func
+    org = get_org_id()
     offset = max(0, (page - 1) * limit)
     with engine.connect() as conn:
-        base_filters = []
+        base_filters = [unknown_persons_table.c.org_id == org]
         if resolved is not None:
             base_filters.append(unknown_persons_table.c.resolved == resolved)
         if date:
@@ -1627,23 +1675,18 @@ def db_get_unknowns(
                 (unknown_persons_table.c.camera_ids.like(s_pattern))
             )
 
-        count_q = select(func.count()).select_from(unknown_persons_table)
-        if base_filters:
-            count_q = count_q.where(*base_filters)
+        count_q = select(func.count()).select_from(unknown_persons_table).where(*base_filters)
         total_count = conn.execute(count_q).scalar() or 0
 
-        q = select(unknown_persons_table)
-        if base_filters:
-            q = q.where(*base_filters)
+        q = select(unknown_persons_table).where(*base_filters)
         q = q.order_by(unknown_persons_table.c.last_seen.desc()).offset(offset).limit(limit)
         rows = _rows_to_list(conn.execute(q))
 
     for r in rows:
         r["camera_ids"]  = _json_field(r.get("camera_ids"), "[]")
         r["snapshots"]   = _json_field(r.get("snapshots"),  "[]")
-        # keep payload small — thumbnail lazy-loads via /api/v1/unknowns/{id}/snapshot
         r.pop("snapshot_b64s", None)
-        r.pop("embedding", None)   # don't send large embeddings to UI
+        r.pop("embedding", None)
 
     total_pages = max(1, (total_count + limit - 1) // limit) if total_count > 0 else 1
     return {
@@ -1713,7 +1756,8 @@ def db_clear_resolved_unknowns() -> int:
 # ─── ANALYTICS HELPERS ────────────────────────────────────────
 
 def db_get_events_for_analytics(target_date: str) -> List[dict]:
-    """Get all events for a specific date (for headcount/occupancy)."""
+    """Get all events for a specific date (for headcount/occupancy). Filtered by tenant."""
+    org = get_org_id()
     with engine.connect() as conn:
         q = select(
             events_table.c.id,
@@ -1723,13 +1767,17 @@ def db_get_events_for_analytics(target_date: str) -> List[dict]:
             events_table.c.matched,
             events_table.c.timestamp,
             events_table.c.bbox,
-        ).where(events_table.c.timestamp.like(f"{target_date}%"))
+        ).where(
+            and_(events_table.c.org_id == org,
+                 events_table.c.timestamp.like(f"{target_date}%"))
+        )
         rows = _rows_to_list(conn.execute(q))
     for r in rows:
         r["bbox"] = _json_field(r.get("bbox"), "[]")
     return rows
 
 def db_get_attendance_for_analytics(target_date: str) -> List[dict]:
+    org = get_org_id()
     with engine.connect() as conn:
         rows = _rows_to_list(conn.execute(
             select(
@@ -1739,20 +1787,25 @@ def db_get_attendance_for_analytics(target_date: str) -> List[dict]:
                 attendance_table.c.checkin_time,
                 attendance_table.c.checkout_time,
                 attendance_table.c.date,
-            ).where(attendance_table.c.date == target_date)
+            ).where(
+                and_(attendance_table.c.org_id == org,
+                     attendance_table.c.date == target_date)
+            )
         ))
     return rows
 
 def db_get_all_attendance_dates() -> List[dict]:
-    """Get attendance count per date (last 7 days) for daily chart."""
+    """Get attendance count per date (last 7 days) for daily chart. Filtered by tenant."""
+    org = get_org_id()
     with engine.connect() as conn:
         rows = conn.execute(text("""
             SELECT date, COUNT(*) as count
             FROM `3c_eng_attendance`
+            WHERE org_id = :org
             GROUP BY date
             ORDER BY date DESC
             LIMIT 7
-        """)).fetchall()
+        """), {"org": org}).fetchall()
     return [{"date": r[0], "count": r[1]} for r in rows]
 
 def db_get_dashboard_stats(target_date: Optional[str] = None) -> dict:
@@ -1796,9 +1849,10 @@ def db_get_dashboard_stats(target_date: Optional[str] = None) -> dict:
 
 
 def db_get_dashboard_full(target_date: str = None, camera_id: Optional[str] = None) -> dict:
-    """All-in-one dashboard data: stats + headcount + occupancy in minimal DB calls."""
+    """All-in-one dashboard data: stats + headcount + occupancy. Filtered by tenant."""
     if not target_date:
         target_date = datetime.now().strftime("%Y-%m-%d")
+    org = get_org_id()
 
     with engine.connect() as conn:
         att_sql = """
@@ -1806,9 +1860,9 @@ def db_get_dashboard_full(target_date: str = None, camera_id: Optional[str] = No
                 COALESCE(SUM(CASE WHEN status = 'checked_in' THEN 1 ELSE 0 END), 0) AS att_in,
                 COALESCE(SUM(CASE WHEN status = 'checked_out' THEN 1 ELSE 0 END), 0) AS att_out,
                 COUNT(*) AS att_total
-            FROM `3c_eng_attendance` WHERE date = :d
+            FROM `3c_eng_attendance` WHERE date = :d AND org_id = :org
         """
-        att_params = {"d": target_date}
+        att_params = {"d": target_date, "org": org}
         if camera_id and camera_id != "all":
             att_sql += " AND camera_id = :cam"
             att_params["cam"] = camera_id
@@ -1821,9 +1875,9 @@ def db_get_dashboard_full(target_date: str = None, camera_id: Optional[str] = No
                 COALESCE(SUM(CASE WHEN person_type = 'visitor' THEN 1 ELSE 0 END), 0) AS vis_det,
                 COALESCE(SUM(CASE WHEN person_type = 'blacklisted' THEN 1 ELSE 0 END), 0) AS blk_det,
                 COALESCE(SUM(CASE WHEN matched = :m_false THEN 1 ELSE 0 END), 0) AS unk_det
-            FROM `3c_eng_events` WHERE timestamp LIKE :ts
+            FROM `3c_eng_events` WHERE timestamp LIKE :ts AND org_id = :org
         """
-        ev_params = {"ts": f"{target_date}%", "m_true": True, "m_false": False}
+        ev_params = {"ts": f"{target_date}%", "m_true": True, "m_false": False, "org": org}
         if camera_id and camera_id != "all":
             ev_sql += " AND camera_id = :cam"
             ev_params["cam"] = camera_id
@@ -1834,25 +1888,26 @@ def db_get_dashboard_full(target_date: str = None, camera_id: Optional[str] = No
                 COALESCE(SUM(CASE WHEN watchlist IN ('employee') OR watchlist IS NULL THEN 1 ELSE 0 END), 0) AS enrolled,
                 COALESCE(SUM(CASE WHEN watchlist = 'blacklist' THEN 1 ELSE 0 END), 0) AS blk_cnt,
                 COALESCE(SUM(CASE WHEN watchlist = 'visitor' THEN 1 ELSE 0 END), 0) AS vis_cnt
-            FROM `3c_eng_persons`
-        """)).fetchone()
+            FROM `3c_eng_persons` WHERE org_id = :org
+        """), {"org": org}).fetchone()
 
         unres_unk = conn.execute(
             select(text("COUNT(*)")).select_from(unknown_persons_table)
-            .where(unknown_persons_table.c.resolved == False)
+            .where(and_(unknown_persons_table.c.resolved == False,
+                        unknown_persons_table.c.org_id == org))
         ).scalar() or 0
 
         if DB_TYPE == "mysql":
             hour_sql = """
                 SELECT DATE_FORMAT(timestamp, '%Y-%m-%d %H:00:00') AS hour, COUNT(*) AS cnt
-                FROM `3c_eng_events` WHERE timestamp LIKE :ts
+                FROM `3c_eng_events` WHERE timestamp LIKE :ts AND org_id = :org
             """
         else:
             hour_sql = """
                 SELECT SUBSTR(timestamp, 1, 13) || ':00:00' AS hour, COUNT(*) AS cnt
-                FROM `3c_eng_events` WHERE timestamp LIKE :ts
+                FROM `3c_eng_events` WHERE timestamp LIKE :ts AND org_id = :org
             """
-        hour_params = {"ts": f"{target_date}%", "db_type": DB_TYPE}
+        hour_params = {"ts": f"{target_date}%", "org": org}
         if camera_id and camera_id != "all":
             hour_sql += " AND camera_id = :cam"
             hour_params["cam"] = camera_id
@@ -1865,12 +1920,12 @@ def db_get_dashboard_full(target_date: str = None, camera_id: Optional[str] = No
                    COALESCE(SUM(CASE WHEN matched = :m_true THEN 1 ELSE 0 END), 0) AS known,
                    COALESCE(SUM(CASE WHEN matched = :m_false THEN 1 ELSE 0 END), 0) AS unknown,
                    COUNT(DISTINCT CASE WHEN matched = :m_true AND person_id IS NOT NULL THEN person_id ELSE NULL END) AS unique_known
-            FROM `3c_eng_events` WHERE timestamp LIKE :ts
+            FROM `3c_eng_events` WHERE timestamp LIKE :ts AND org_id = :org
             GROUP BY camera_id
-        """), {"ts": f"{target_date}%", "m_true": True, "m_false": False}).fetchall()
+        """), {"ts": f"{target_date}%", "m_true": True, "m_false": False, "org": org}).fetchall()
 
-        att_rows_sql = "SELECT checkin_time, checkout_time FROM `3c_eng_attendance` WHERE date = :d"
-        att_rows_params = {"d": target_date}
+        att_rows_sql = "SELECT checkin_time, checkout_time FROM `3c_eng_attendance` WHERE date = :d AND org_id = :org"
+        att_rows_params = {"d": target_date, "org": org}
         if camera_id and camera_id != "all":
             att_rows_sql += " AND camera_id = :cam"
             att_rows_params["cam"] = camera_id
@@ -1957,11 +2012,14 @@ DEFAULT_SETTINGS = {
 }
 
 def db_get_system_settings() -> dict:
-    """Retrieve all stored system settings with fallbacks."""
+    """Retrieve all stored system settings with fallbacks for this tenant."""
+    org = get_org_id()
     res = dict(DEFAULT_SETTINGS)
     try:
         with engine.connect() as conn:
-            rows = conn.execute(select(settings_table)).fetchall()
+            rows = conn.execute(
+                select(settings_table).where(settings_table.c.org_id == org)
+            ).fetchall()
             for r in rows:
                 res[r.key_name] = r.value
     except Exception as e:
@@ -1969,15 +2027,27 @@ def db_get_system_settings() -> dict:
     return res
 
 def db_save_system_setting(key: str, value: str):
-    """Save or update a system setting key-value pair."""
+    """Save or update a system setting key-value pair for this tenant."""
+    org = get_org_id()
     try:
         with engine.connect() as conn:
-            stmt = select(settings_table).where(settings_table.c.key_name == key)
-            row = conn.execute(stmt).fetchone()
+            row = conn.execute(
+                select(settings_table).where(
+                    and_(settings_table.c.org_id == org,
+                         settings_table.c.key_name == key)
+                )
+            ).fetchone()
             if row:
-                conn.execute(settings_table.update().where(settings_table.c.key_name == key).values(value=str(value)))
+                conn.execute(
+                    settings_table.update()
+                    .where(and_(settings_table.c.org_id == org,
+                                settings_table.c.key_name == key))
+                    .values(value=str(value))
+                )
             else:
-                conn.execute(settings_table.insert().values(key_name=key, value=str(value)))
+                conn.execute(
+                    settings_table.insert().values(org_id=org, key_name=key, value=str(value))
+                )
             conn.commit()
     except Exception as e:
         print(f"[DB] Error saving system setting {key}: {e}")

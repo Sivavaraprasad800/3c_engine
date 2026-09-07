@@ -121,9 +121,9 @@ class FaceIndex:
         self.id_map: Dict[int, dict] = {}
         self.next_id    = 0
 
-        # Try loading from MySQL first (embeddings now correctly exported with det_size=320)
-        loaded_from_mysql = False  # Disabled — use local .faiss which has all 110 persons
-        # MySQL only has 79 persons (missing 31 that had no images for re-export)
+        # Try loading from MySQL first — primary source of truth for multi-tenant deployments.
+        # org_id is read from ORG_ID env var so each site only loads its own embeddings.
+        loaded_from_mysql = self._load_from_mysql()
 
         if not loaded_from_mysql:
             # Fall back to local .faiss + .pkl files
@@ -133,30 +133,35 @@ class FaceIndex:
                     data = pickle.load(f)
                     self.id_map  = data['id_map']
                     self.next_id = data['next_id']
+                print(f"[FaceIndex] Loaded {self.index.ntotal} {watchlist} embeddings from local files (MySQL unavailable)")
             else:
                 self.index = faiss.IndexIDMap(faiss.IndexFlatIP(self.dim))
+                print(f"[FaceIndex] Empty {watchlist} index — no local file and MySQL unavailable")
         else:
-            # Also save to local files as backup
+            # Also save to local files as backup (for offline recovery)
             self._save()
 
     def _load_from_mysql(self) -> bool:
-        """Load all embeddings from MySQL into FAISS. Returns True if successful."""
+        """Load all embeddings from MySQL for this tenant (org_id) into FAISS. Returns True if successful."""
         conn = self._get_mysql()
         if not conn:
             return False
         try:
             import json as _json
+            import os as _os
+            org_id = _os.environ.get("ORG_ID", "default").strip().lower()
             cur = conn.cursor()
             cur.execute("""
                 SELECT id, person_id, name, embedding
                 FROM 3c_eng_face_embeddings
-                WHERE watchlist = %s
+                WHERE watchlist = %s AND (org_id = %s OR org_id IS NULL OR org_id = 'default')
                 ORDER BY id
-            """, (self.watchlist,))
+            """, (self.watchlist, org_id))
             rows = cur.fetchall()
             conn.close()
 
             if not rows:
+                print(f"[FaceIndex] No {self.watchlist} embeddings found in MySQL for org_id='{org_id}'")
                 return False
 
             self.index = faiss.IndexIDMap(faiss.IndexFlatIP(self.dim))
@@ -175,7 +180,7 @@ class FaceIndex:
                 except Exception:
                     continue
 
-            print(f"[FaceIndex] Loaded {self.index.ntotal} {self.watchlist} embeddings from MySQL")
+            print(f"[FaceIndex] Loaded {self.index.ntotal} {self.watchlist} embeddings from MySQL (org_id='{org_id}')")
             return True
 
         except Exception as e:
@@ -232,17 +237,25 @@ class FaceIndex:
                 "embeddings_for_person": count + 1}
 
     def _mysql_save_embedding(self, person_id: int, name: str, emb_json: str) -> int:
-        """Save one embedding to MySQL. Returns db_id or 0 on failure."""
+        """Save one embedding to MySQL with org_id. Returns db_id or 0 on failure."""
         conn = self._get_mysql()
         if not conn:
             return 0
         try:
+            import os as _os
             from datetime import datetime
+            org_id = _os.environ.get("ORG_ID", "default").strip().lower()
             cur = conn.cursor()
+            # Ensure org_id column exists (safe — ignore if already there)
+            try:
+                cur.execute("ALTER TABLE 3c_eng_face_embeddings ADD COLUMN org_id VARCHAR(100) DEFAULT 'default'")
+                conn.commit()
+            except Exception:
+                pass
             cur.execute("""INSERT INTO 3c_eng_face_embeddings
-                (person_id, name, watchlist, embedding, created_at)
-                VALUES(%s,%s,%s,%s,%s)""",
-                (person_id, name, self.watchlist, emb_json, datetime.now().isoformat()))
+                (person_id, name, watchlist, embedding, org_id, created_at)
+                VALUES(%s,%s,%s,%s,%s,%s)""",
+                (person_id, name, self.watchlist, emb_json, org_id, datetime.now().isoformat()))
             conn.commit()
             db_id = cur.lastrowid
             conn.close()

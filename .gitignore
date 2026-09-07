@@ -1,7 +1,8 @@
 # ── Secrets & credentials (NEVER commit) ──
 .env
-*.env
-.env.*
+.env.local
+.env.production
+# Keep .env.example — it's a safe template with no real credentials
 
 # ── FAISS binary indexes (large, regenerate from DB) ──
 *.faiss
@@ -18,9 +19,13 @@ node_modules/
 dist/
 .vite/
 
-# ── ALL bat and ps1 scripts ──
-*.bat
+# ── ALL ps1 scripts ──
 *.ps1
+
+# ── Packaging cmd files that contain no secrets ──
+# (install.cmd and service_install.cmd ARE committed — they're deployment tools)
+# nssm/ download dir is local only
+nssm/
 
 # ── Scripts subfolders (research/debug/migration/tools — local only) ──
 scripts/
