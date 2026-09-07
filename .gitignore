@@ -19,8 +19,8 @@ node_modules/
 dist/
 .vite/
 
-# ── ALL ps1 scripts ──
-*.ps1
+# ── ps1 scripts (user-specific) ──
+# open_app.ps1 and install_app.ps1 are committed — they're needed for installation
 
 # ── Packaging cmd files that contain no secrets ──
 # (install.cmd and service_install.cmd ARE committed — they're deployment tools)
