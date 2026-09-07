@@ -133,6 +133,8 @@ from database import (
     db_get_room_occupancy_today, db_clear_room_movements,
     # lazy snapshots
     db_get_event_snapshot, db_get_attendance_snapshot, db_get_unknown_snapshot,
+    # system status heartbeat
+    db_upsert_system_status, db_get_system_status, db_mark_system_offline,
 )
 from global_tracker import global_id_manager, room_occupancy_manager
 import camera_diagnostics as _diag
@@ -170,6 +172,49 @@ def get_entity_id(person_id) -> str:
 
 # Load on startup (will retry in background if DB not ready yet)
 threading.Thread(target=_load_entity_cache, daemon=True).start()
+
+# ─── SYSTEM STATUS HEARTBEAT ──────────────────────────────────
+# Writes to 3c_eng_system_status once on startup + every 1 hour.
+# Very low CPU — just one DB write per hour.
+_APP_VERSION   = "2.1.0"
+_STARTED_AT    = datetime.now().isoformat()
+
+def _get_local_ip() -> str:
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "unknown"
+
+def _heartbeat_loop():
+    """Background thread: write system status to DB every 1 hour. Never blocks camera processing."""
+    import socket as _sock
+    hostname   = _sock.gethostname()
+    ip_address = _get_local_ip()
+    time.sleep(5)   # wait for server fully up before first write
+    while True:
+        try:
+            from database import get_org_id
+            org = get_org_id()
+            cams_running = len(_camera_threads)
+            db_upsert_system_status(
+                org_id          = org,
+                hostname        = hostname,
+                ip_address      = ip_address,
+                status          = 1,
+                cameras_running = cams_running,
+                version         = _APP_VERSION,
+                started_at      = _STARTED_AT,
+            )
+        except Exception as _e:
+            pass   # never raise — heartbeat must not affect main server
+        time.sleep(3600)   # 1 hour
+
+threading.Thread(target=_heartbeat_loop, daemon=True, name="Heartbeat").start()
 
 
 # ─── PATHS ────────────────────────────────────────────────────
@@ -1409,12 +1454,14 @@ def start_camera(cam: dict):
 
 
 def stop_camera(cam_id: str):
-    """Stop a camera background thread."""
+    """Stop a camera background thread. Sets stop_event so thread exits cleanly."""
     if cam_id in _camera_threads:
-        _camera_threads[cam_id]["stop"].set()
-        _camera_threads[cam_id]["thread"].join(timeout=3)
+        entry = _camera_threads[cam_id]
+        entry["stop"].set()          # signal the thread to stop
+        entry["thread"].join(timeout=5)  # wait up to 5s
+        # Even if join times out, remove from tracking — the thread will
+        # notice stop_event is set on its next iteration and exit cleanly
         del _camera_threads[cam_id]
-        # Clean pushed FPS tracking for this camera
         _pushed_fps.pop(cam_id, None)
         _pushed_count.pop(cam_id, None)
         _pushed_last_reset.pop(cam_id, None)
@@ -1722,6 +1769,33 @@ def camera_diagnostics():
     logs = _diag.get_recent_logs(200)
     return {"log_file": _diag.get_log_path(), "lines": logs, "count": len(logs)}
 
+@app.get("/api/v1/system/status")
+def get_system_status_all():
+    """
+    Returns all FRS installations and their online/offline status.
+    Status 1 = running, 0 = offline.
+    A system is considered offline if last_heartbeat > 2 hours ago.
+    """
+    from database import get_org_id
+    rows = db_get_system_status()   # all orgs — admin view
+    now = datetime.now()
+    result = []
+    for r in rows:
+        # Mark as offline if heartbeat is older than 2 hours
+        try:
+            last_hb = datetime.fromisoformat(r["last_heartbeat"]) if r.get("last_heartbeat") else None
+            minutes_ago = int((now - last_hb).total_seconds() / 60) if last_hb else 9999
+            online = r.get("status", 0) == 1 and minutes_ago < 120
+        except Exception:
+            minutes_ago = 9999
+            online = False
+        result.append({
+            **r,
+            "online":      online,
+            "minutes_ago": minutes_ago,
+        })
+    return {"installations": result, "total": len(result)}
+
 @app.get("/api/v1/frd/status")
 def face_engine_status():
     """Diagnostic: shows FAISS index health + enrolled person counts."""
@@ -2004,7 +2078,8 @@ def update_camera(camera_id: str, update: CameraUpdate):
                       "face_confidence", "min_yaw", "max_yaw", "min_pitch", "max_pitch"}
     changed = any(k in restart_fields for k in update.dict(exclude_unset=True).keys())
     if changed:
-        if cam.get("enabled", True):
+        # FIX: use False as default — never auto-start a camera that has no explicit enabled=True
+        if cam.get("enabled", False):
             start_camera(cam)
         else:
             stop_camera(camera_id)
@@ -2020,20 +2095,10 @@ def delete_camera(camera_id: str):
     db_delete_camera(camera_id)
     return {"success": True}
 
-@app.post("/api/v1/cameras/{camera_id}/start")
-def start_camera_api(camera_id: str):
-    cameras = db_get_cameras()
-    cam = next((c for c in cameras if c["id"] == camera_id), None)
-    if not cam:
-        raise HTTPException(404, "Camera not found")
-    start_camera(cam)
-    return {"success": True, "status": "started"}
-
 @app.post("/api/v1/cameras/{camera_id}/stop")
 def stop_camera_api(camera_id: str):
     """Stop camera and save enabled=False to DB so it stays stopped after restart."""
     stop_camera(camera_id)
-    # FIX: persist the stopped state to DB — so server restart doesn't auto-start it again
     try:
         cameras = db_get_cameras()
         cam = next((c for c in cameras if c["id"] == camera_id), None)
@@ -2050,7 +2115,6 @@ def start_camera_api(camera_id: str):
     cam = next((c for c in cameras if c["id"] == camera_id), None)
     if not cam:
         raise HTTPException(404, "Camera not found")
-    # FIX: persist enabled=True so restart keeps it running
     try:
         db_upsert_camera({**cam, "enabled": True})
     except Exception as e:

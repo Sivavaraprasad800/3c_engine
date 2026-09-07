@@ -420,6 +420,21 @@ room_occupancy_table = Table("3c_eng_room_occupancy", metadata,
     Column("last_updated",  String(50),  nullable=True),
 )
 
+# ── SYSTEM STATUS TABLE ────────────────────────────────────
+# One row per PC installation. Updated every 1 hour.
+# Lets you see all installed FRS sites and whether they are online.
+system_status_table = Table("3c_eng_system_status", metadata,
+    Column("id",            Integer,     primary_key=True, autoincrement=True),
+    Column("org_id",        String(100), nullable=False, default="default"),
+    Column("hostname",      String(200), nullable=True),   # PC name
+    Column("ip_address",    String(50),  nullable=True),   # local IP
+    Column("status",        Integer,     default=1),        # 1=running, 0=stopped
+    Column("version",       String(50),  nullable=True),   # app version
+    Column("cameras_running", Integer,   default=0),        # how many cameras live
+    Column("last_heartbeat", String(50), nullable=True),   # ISO timestamp
+    Column("started_at",    String(50),  nullable=True),   # when FRS started
+)
+
 # ─── INIT ─────────────────────────────────────────────────────
 def init_db():
     """Create all tables if they don't exist. Also runs safe migrations."""
@@ -2089,3 +2104,82 @@ def db_seed_sample_comparison_data():
     return len(sample_ks), len(sample_our)
 
 
+
+# ─── SYSTEM STATUS HELPERS ────────────────────────────────────
+
+def db_upsert_system_status(org_id: str, hostname: str, ip_address: str,
+                             status: int, cameras_running: int,
+                             version: str = "1.0.0", started_at: str = None) -> bool:
+    """
+    Insert or update the system status for this installation.
+    Called every 1 hour by the server heartbeat thread.
+    status: 1 = running, 0 = stopped
+    """
+    now = datetime.now().isoformat()
+    try:
+        with engine.connect() as conn:
+            # Check if row exists for this org_id + hostname
+            existing = conn.execute(
+                select(system_status_table).where(
+                    and_(system_status_table.c.org_id == org_id,
+                         system_status_table.c.hostname == hostname)
+                )
+            ).fetchone()
+
+            if existing:
+                conn.execute(
+                    update(system_status_table)
+                    .where(and_(system_status_table.c.org_id == org_id,
+                                system_status_table.c.hostname == hostname))
+                    .values(
+                        ip_address      = ip_address,
+                        status          = status,
+                        cameras_running = cameras_running,
+                        version         = version,
+                        last_heartbeat  = now,
+                    )
+                )
+            else:
+                conn.execute(insert(system_status_table).values(
+                    org_id          = org_id,
+                    hostname        = hostname,
+                    ip_address      = ip_address,
+                    status          = status,
+                    cameras_running = cameras_running,
+                    version         = version,
+                    last_heartbeat  = now,
+                    started_at      = started_at or now,
+                ))
+            conn.commit()
+        return True
+    except Exception as e:
+        print(f"[DB] system_status upsert failed: {e}")
+        return False
+
+
+def db_get_system_status(org_id: str = None) -> List[dict]:
+    """Get all system status rows, optionally filtered by org_id."""
+    try:
+        with engine.connect() as conn:
+            q = select(system_status_table).order_by(system_status_table.c.last_heartbeat.desc())
+            if org_id:
+                q = q.where(system_status_table.c.org_id == org_id)
+            return _rows_to_list(conn.execute(q))
+    except Exception as e:
+        print(f"[DB] system_status query failed: {e}")
+        return []
+
+
+def db_mark_system_offline(org_id: str, hostname: str):
+    """Mark a system as offline (status=0). Called on clean shutdown."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                update(system_status_table)
+                .where(and_(system_status_table.c.org_id == org_id,
+                            system_status_table.c.hostname == hostname))
+                .values(status=0, last_heartbeat=datetime.now().isoformat())
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"[DB] system_status offline mark failed: {e}")
