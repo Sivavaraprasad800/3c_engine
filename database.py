@@ -450,6 +450,8 @@ def init_db():
             "ALTER TABLE `3c_eng_attendance` ADD COLUMN org_id VARCHAR(100) DEFAULT 'default'",
             "ALTER TABLE `3c_eng_unknown_persons` ADD COLUMN org_id VARCHAR(100) DEFAULT 'default'",
             "ALTER TABLE `3c_eng_settings` ADD COLUMN org_id VARCHAR(100) DEFAULT 'default'",
+            # face_embeddings table (managed by face_engine.py)
+            "ALTER TABLE `3c_eng_face_embeddings` ADD COLUMN org_id VARCHAR(100) DEFAULT 'default'",
         ]
         for _sql in _safe_alter:
             try:
@@ -850,7 +852,6 @@ def db_upsert_person(person: dict, photo_array=None) -> dict:
                      persons_table.c.org_id == org)
             )
         ).fetchone()
-
         data = {
             "org_id":       org,
             "name":         person.get("name"),
@@ -861,16 +862,10 @@ def db_upsert_person(person: dict, photo_array=None) -> dict:
         }
         if b64:
             data["photo_b64"] = b64
-
         if existing:
-            conn.execute(
-                update(persons_table)
-                .where(and_(persons_table.c.id == person["id"],
-                            persons_table.c.org_id == org))
-                .values(**data)
-            )
+            conn.execute(update(persons_table).where(and_(persons_table.c.id == person["id"], persons_table.c.org_id == org)).values(**data))
         else:
-            data["id"]         = person["id"]
+            data["id"] = person["id"]
             data["created_at"] = person.get("created_at", now)
             conn.execute(insert(persons_table).values(**data))
         conn.commit()
@@ -961,9 +956,7 @@ def db_clear_person_training_images(person_id: int):
 def db_get_cameras() -> List[dict]:
     org = get_org_id()
     with engine.connect() as conn:
-        rows = _rows_to_list(conn.execute(
-            select(cameras_table).where(cameras_table.c.org_id == org)
-        ))
+        rows = _rows_to_list(conn.execute(select(cameras_table).where(cameras_table.c.org_id == org)))
     for r in rows:
         r["detection_zone"] = _json_field(r.get("detection_zone"), "[]")
         r["entry_zone"] = _json_field(r.get("entry_zone"), None) if r.get("entry_zone") else None
@@ -977,47 +970,26 @@ def db_upsert_camera(cam: dict):
     now = datetime.now().isoformat()
     zone = _to_json(cam.get("detection_zone", []))
     with engine.connect() as conn:
-        existing = conn.execute(
-            select(cameras_table).where(
-                and_(cameras_table.c.id == cam["id"],
-                     cameras_table.c.org_id == org)
-            )
-        ).fetchone()
-
+        existing = conn.execute(select(cameras_table).where(and_(cameras_table.c.id == cam["id"], cameras_table.c.org_id == org))).fetchone()
         data = {
-            "org_id":           org,
-            "name":             cam.get("name"),
-            "rtsp_url":         cam.get("rtsp_url"),
-            "camera_type":      cam.get("camera_type", "checkin"),
-            "fps":              cam.get("fps", 30),
-            "enabled":          cam.get("enabled", True),
-            "notes":            cam.get("notes", ""),
-            "face_confidence":  cam.get("face_confidence", 0.6),
-            "detection_range":  cam.get("detection_range", 6.5),
-            "min_yaw":          cam.get("min_yaw", -35),
-            "max_yaw":          cam.get("max_yaw", 35),
-            "min_pitch":        cam.get("min_pitch", -15),
-            "max_pitch":        cam.get("max_pitch", 15),
-            "detection_zone":   zone,
-            "send_image":       cam.get("send_image", True),
-            "data_frequency":   cam.get("data_frequency", 2),
-            "room_id":          cam.get("room_id"),
-            "map_x":            cam.get("map_x"),
-            "map_y":            cam.get("map_y"),
-            "entry_zone":       _to_json(cam.get("entry_zone")) if cam.get("entry_zone") else None,
-            "exit_zone":        _to_json(cam.get("exit_zone")) if cam.get("exit_zone") else None,
-            "count_line":       _to_json(cam.get("count_line")) if cam.get("count_line") else None,
-            "count_inside_pt":  _to_json(cam.get("count_inside_pt")) if cam.get("count_inside_pt") else None,
+            "org_id": org, "name": cam.get("name"), "rtsp_url": cam.get("rtsp_url"),
+            "camera_type": cam.get("camera_type", "checkin"), "fps": cam.get("fps", 30),
+            "enabled": cam.get("enabled", True), "notes": cam.get("notes", ""),
+            "face_confidence": cam.get("face_confidence", 0.6), "detection_range": cam.get("detection_range", 6.5),
+            "min_yaw": cam.get("min_yaw", -35), "max_yaw": cam.get("max_yaw", 35),
+            "min_pitch": cam.get("min_pitch", -15), "max_pitch": cam.get("max_pitch", 15),
+            "detection_zone": zone, "send_image": cam.get("send_image", True),
+            "data_frequency": cam.get("data_frequency", 2), "room_id": cam.get("room_id"),
+            "map_x": cam.get("map_x"), "map_y": cam.get("map_y"),
+            "entry_zone": _to_json(cam.get("entry_zone")) if cam.get("entry_zone") else None,
+            "exit_zone": _to_json(cam.get("exit_zone")) if cam.get("exit_zone") else None,
+            "count_line": _to_json(cam.get("count_line")) if cam.get("count_line") else None,
+            "count_inside_pt": _to_json(cam.get("count_inside_pt")) if cam.get("count_inside_pt") else None,
         }
         if existing:
-            conn.execute(
-                update(cameras_table).where(
-                    and_(cameras_table.c.id == cam["id"],
-                         cameras_table.c.org_id == org)
-                ).values(**data)
-            )
+            conn.execute(update(cameras_table).where(and_(cameras_table.c.id == cam["id"], cameras_table.c.org_id == org)).values(**data))
         else:
-            data["id"]         = cam["id"]
+            data["id"] = cam["id"]
             data["created_at"] = cam.get("created_at", now)
             conn.execute(insert(cameras_table).values(**data))
         conn.commit()
@@ -1268,124 +1240,64 @@ def _make_tracker_id(camera_id, person_id, bbox, timestamp):
 
 
 def db_save_event(event: dict, snapshot_array=None, shared_conn=None) -> int:
-    """Save a recognition event. Dedup by tracker_id — deterministic, no race conditions."""
+    """Save a recognition event. Dedup by tracker_id."""
     org = get_org_id()
     b64 = numpy_to_b64(snapshot_array) if snapshot_array is not None else None
     _ts = event.get("timestamp", datetime.now().isoformat())
-
-    # Generate tracker_id: same face + same frame = same tracker_id
-    _tid = _make_tracker_id(
-        event.get("camera_id", ""),
-        event.get("person_id"),
-        event.get("bbox", []),
-        _ts
-    )
+    _tid = _make_tracker_id(event.get("camera_id", ""), event.get("person_id"), event.get("bbox", []), _ts)
 
     def _do_save(conn):
-        # DEDUP: if tracker_id already exists, skip entirely
-        _exists = conn.execute(
-            select(events_table.c.id).where(
-                events_table.c.tracker_id == _tid
-            ).limit(1)
-        ).fetchone()
+        _exists = conn.execute(select(events_table.c.id).where(events_table.c.tracker_id == _tid).limit(1)).fetchone()
         if _exists:
-            return _exists[0]  # DUPLICATE — skip
-
+            return _exists[0]
         result = conn.execute(insert(events_table).values(
-            org_id       = org,
-            event_id     = event.get("event_id"),
-            camera_id    = event.get("camera_id"),
-            person_id    = event.get("person_id"),
-            entity_id    = event.get("entity_id"),
-            person_name  = event.get("person_name", "Unknown"),
-            person_type  = event.get("person_type", "unknown"),
-            confidence   = event.get("confidence", 0.0),
-            matched      = event.get("matched", False),
-            suspected    = event.get("suspected", False),
-            bbox         = _to_json(event.get("bbox", [])),
-            snapshot_b64 = b64,
-            snapshot_path= event.get("snapshot_path"),
-            timestamp    = _ts,
-            tracker_id   = _tid,
+            org_id=org, event_id=event.get("event_id"), camera_id=event.get("camera_id"),
+            person_id=event.get("person_id"), entity_id=event.get("entity_id"),
+            person_name=event.get("person_name", "Unknown"), person_type=event.get("person_type", "unknown"),
+            confidence=event.get("confidence", 0.0), matched=event.get("matched", False),
+            suspected=event.get("suspected", False), bbox=_to_json(event.get("bbox", [])),
+            snapshot_b64=b64, snapshot_path=event.get("snapshot_path"), timestamp=_ts, tracker_id=_tid,
         ))
         conn.commit()
         return result.inserted_primary_key[0]
 
     try:
-        if shared_conn:
-            return _do_save(shared_conn)
+        if shared_conn: return _do_save(shared_conn)
         else:
-            with engine.connect() as conn:
-                return _do_save(conn)
+            with engine.connect() as conn: return _do_save(conn)
     except Exception as _err:
         err_str = str(_err).lower()
         if 'duplicate' in err_str or 'unique' in err_str:
-            print(f"[Dedup] tracker_id collision blocked: {_tid[:12]}...")
             return -1
         print(f"[DB] Event save failed: {str(_err)[:80]}")
         return -1
 
-def db_get_events(
-    limit: int = 10,
-    page: int = 1,
-    camera_id: Optional[str] = None,
-    person_id: Optional[int] = None,
-    matched: Optional[bool] = None,
-    suspected: Optional[bool] = None,
-    person_type: Optional[str] = None,
-    search: Optional[str] = None,
-    hours: int = 24,
-    include_snapshots: bool = False
-) -> dict:
-    """List events with backend pagination. Filtered by current org_id tenant."""
+def db_get_events(limit: int = 10, page: int = 1, camera_id: Optional[str] = None,
+    person_id: Optional[int] = None, matched: Optional[bool] = None,
+    suspected: Optional[bool] = None, person_type: Optional[str] = None,
+    search: Optional[str] = None, hours: int = 24, include_snapshots: bool = False) -> dict:
     from sqlalchemy import func
     org = get_org_id()
     cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
     offset = max(0, (page - 1) * limit)
-
     with engine.connect() as conn:
-        base_filters = [
-            events_table.c.org_id == org,
-            events_table.c.timestamp >= cutoff,
-        ]
-        if camera_id and camera_id != "all":
-            base_filters.append(events_table.c.camera_id == camera_id)
-        if person_id is not None:
-            base_filters.append(events_table.c.person_id == person_id)
-        if matched is not None:
-            base_filters.append(events_table.c.matched == matched)
-        if suspected is not None:
-            base_filters.append(events_table.c.suspected == suspected)
-        if person_type:
-            base_filters.append(events_table.c.person_type == person_type)
+        base_filters = [events_table.c.org_id == org, events_table.c.timestamp >= cutoff]
+        if camera_id and camera_id != "all": base_filters.append(events_table.c.camera_id == camera_id)
+        if person_id is not None: base_filters.append(events_table.c.person_id == person_id)
+        if matched is not None: base_filters.append(events_table.c.matched == matched)
+        if suspected is not None: base_filters.append(events_table.c.suspected == suspected)
+        if person_type: base_filters.append(events_table.c.person_type == person_type)
         if search:
-            s_pattern = f"%{search.strip()}%"
-            base_filters.append(
-                (events_table.c.person_name.like(s_pattern)) | (events_table.c.camera_id.like(s_pattern))
-            )
-
-        count_q = select(func.count()).select_from(events_table).where(*base_filters)
-        total_count = conn.execute(count_q).scalar() or 0
-
-        q = select(events_table).where(*base_filters).order_by(events_table.c.timestamp.desc()).offset(offset).limit(limit)
-        rows = _rows_to_list(conn.execute(q))
-
+            s = f"%{search.strip()}%"
+            base_filters.append((events_table.c.person_name.like(s)) | (events_table.c.camera_id.like(s)))
+        total_count = conn.execute(select(func.count()).select_from(events_table).where(*base_filters)).scalar() or 0
+        rows = _rows_to_list(conn.execute(select(events_table).where(*base_filters).order_by(events_table.c.timestamp.desc()).offset(offset).limit(limit)))
     for r in rows:
         r["bbox"] = _json_field(r.get("bbox"), "[]")
-        if include_snapshots:
-            r["snapshot_data_url"] = b64_to_data_url(r.get("snapshot_b64"))
-        else:
-            r.pop("snapshot_b64", None)
-
+        if include_snapshots: r["snapshot_data_url"] = b64_to_data_url(r.get("snapshot_b64"))
+        else: r.pop("snapshot_b64", None)
     total_pages = max(1, (total_count + limit - 1) // limit) if total_count > 0 else 1
-    return {
-        "events": rows,
-        "total_count": total_count,
-        "count": len(rows),
-        "page": page,
-        "limit": limit,
-        "total_pages": total_pages
-    }
+    return {"events": rows, "total_count": total_count, "count": len(rows), "page": page, "limit": limit, "total_pages": total_pages}
 
 def db_delete_event(event_id: int) -> bool:
     """Delete an event and its linked attendance record (cascade delete)."""
@@ -1460,14 +1372,10 @@ def db_get_attendance(
     org = get_org_id()
     with engine.connect() as conn:
         q = select(attendance_table).where(attendance_table.c.org_id == org)
-        if date:
-            q = q.where(attendance_table.c.date == date)
-        if status:
-            q = q.where(attendance_table.c.status == status)
-        if person_id is not None:
-            q = q.where(attendance_table.c.person_id == person_id)
-        q = q.order_by(attendance_table.c.checkin_time.desc()).limit(limit)
-        rows = _rows_to_list(conn.execute(q))
+        if date: q = q.where(attendance_table.c.date == date)
+        if status: q = q.where(attendance_table.c.status == status)
+        if person_id is not None: q = q.where(attendance_table.c.person_id == person_id)
+        rows = _rows_to_list(conn.execute(q.order_by(attendance_table.c.checkin_time.desc()).limit(limit)))
     for r in rows:
         r.pop("snapshot_b64", None)
     return rows
@@ -1477,18 +1385,11 @@ def db_save_attendance(record: dict, snapshot_array=None) -> int:
     b64 = numpy_to_b64(snapshot_array) if snapshot_array is not None else None
     with engine.connect() as conn:
         result = conn.execute(insert(attendance_table).values(
-            org_id       = org,
-            person_id    = record.get("person_id"),
-            person_name  = record.get("person_name"),
-            camera_id    = record.get("camera_id"),
-            checkin_time = record.get("checkin_time"),
-            checkout_time= record.get("checkout_time"),
-            duration_min = record.get("duration_min"),
-            duration_str = record.get("duration_str"),
-            status       = record.get("status", "checked_in"),
-            snapshot_b64 = b64,
-            snapshot_path= record.get("snapshot_path"),
-            date         = record.get("date"),
+            org_id=org, person_id=record.get("person_id"), person_name=record.get("person_name"),
+            camera_id=record.get("camera_id"), checkin_time=record.get("checkin_time"),
+            checkout_time=record.get("checkout_time"), duration_min=record.get("duration_min"),
+            duration_str=record.get("duration_str"), status=record.get("status", "checked_in"),
+            snapshot_b64=b64, snapshot_path=record.get("snapshot_path"), date=record.get("date"),
         ))
         conn.commit()
         return result.inserted_primary_key[0]
@@ -1634,69 +1535,38 @@ def db_purge_old_alerts(keep: int = 1000):
 def db_save_unknown(unknown: dict, snapshot_array=None) -> int:
     org = get_org_id()
     b64 = numpy_to_b64(snapshot_array) if snapshot_array is not None else None
-    b64s = [b64] if b64 else []
     with engine.connect() as conn:
         result = conn.execute(insert(unknown_persons_table).values(
-            org_id        = org,
-            tracking_id   = unknown.get("tracking_id"),
-            first_seen    = unknown.get("first_seen"),
-            last_seen     = unknown.get("last_seen"),
-            camera_ids    = _to_json(unknown.get("camera_ids", [])),
-            snapshots     = _to_json(unknown.get("snapshots", [])),
-            snapshot_b64s = _to_json(b64s),
-            event_count   = unknown.get("event_count", 1),
-            embedding     = _to_json(unknown.get("embedding")) if unknown.get("embedding") else None,
-            resolved      = False,
-            date          = unknown.get("date"),
+            org_id=org, tracking_id=unknown.get("tracking_id"),
+            first_seen=unknown.get("first_seen"), last_seen=unknown.get("last_seen"),
+            camera_ids=_to_json(unknown.get("camera_ids", [])), snapshots=_to_json(unknown.get("snapshots", [])),
+            snapshot_b64s=_to_json([b64] if b64 else []), event_count=unknown.get("event_count", 1),
+            embedding=_to_json(unknown.get("embedding")) if unknown.get("embedding") else None,
+            resolved=False, date=unknown.get("date"),
         ))
         conn.commit()
         return result.inserted_primary_key[0]
 
-def db_get_unknowns(
-    resolved: Optional[bool] = None,
-    date: Optional[str] = None,
-    page: int = 1,
-    limit: int = 10,
-    search: Optional[str] = None
-) -> dict:
+def db_get_unknowns(resolved: Optional[bool] = None, date: Optional[str] = None,
+    page: int = 1, limit: int = 10, search: Optional[str] = None) -> dict:
     from sqlalchemy import func
     org = get_org_id()
     offset = max(0, (page - 1) * limit)
     with engine.connect() as conn:
         base_filters = [unknown_persons_table.c.org_id == org]
-        if resolved is not None:
-            base_filters.append(unknown_persons_table.c.resolved == resolved)
-        if date:
-            base_filters.append(unknown_persons_table.c.date == date)
+        if resolved is not None: base_filters.append(unknown_persons_table.c.resolved == resolved)
+        if date: base_filters.append(unknown_persons_table.c.date == date)
         if search:
-            s_pattern = f"%{search.strip()}%"
-            base_filters.append(
-                (unknown_persons_table.c.tracking_id.like(s_pattern)) |
-                (unknown_persons_table.c.camera_ids.like(s_pattern))
-            )
-
-        count_q = select(func.count()).select_from(unknown_persons_table).where(*base_filters)
-        total_count = conn.execute(count_q).scalar() or 0
-
-        q = select(unknown_persons_table).where(*base_filters)
-        q = q.order_by(unknown_persons_table.c.last_seen.desc()).offset(offset).limit(limit)
-        rows = _rows_to_list(conn.execute(q))
-
+            s = f"%{search.strip()}%"
+            base_filters.append((unknown_persons_table.c.tracking_id.like(s)) | (unknown_persons_table.c.camera_ids.like(s)))
+        total_count = conn.execute(select(func.count()).select_from(unknown_persons_table).where(*base_filters)).scalar() or 0
+        rows = _rows_to_list(conn.execute(select(unknown_persons_table).where(*base_filters).order_by(unknown_persons_table.c.last_seen.desc()).offset(offset).limit(limit)))
     for r in rows:
-        r["camera_ids"]  = _json_field(r.get("camera_ids"), "[]")
-        r["snapshots"]   = _json_field(r.get("snapshots"),  "[]")
-        r.pop("snapshot_b64s", None)
-        r.pop("embedding", None)
-
+        r["camera_ids"] = _json_field(r.get("camera_ids"), "[]")
+        r["snapshots"]  = _json_field(r.get("snapshots"), "[]")
+        r.pop("snapshot_b64s", None); r.pop("embedding", None)
     total_pages = max(1, (total_count + limit - 1) // limit) if total_count > 0 else 1
-    return {
-        "unknown_persons": rows,
-        "total_count": total_count,
-        "count": len(rows),
-        "page": page,
-        "limit": limit,
-        "total_pages": total_pages
-    }
+    return {"unknown_persons": rows, "total_count": total_count, "count": len(rows), "page": page, "limit": limit, "total_pages": total_pages}
 
 def db_get_unknown_by_id(unknown_id: int) -> Optional[dict]:
     with engine.connect() as conn:
@@ -1756,21 +1626,11 @@ def db_clear_resolved_unknowns() -> int:
 # ─── ANALYTICS HELPERS ────────────────────────────────────────
 
 def db_get_events_for_analytics(target_date: str) -> List[dict]:
-    """Get all events for a specific date (for headcount/occupancy). Filtered by tenant."""
     org = get_org_id()
     with engine.connect() as conn:
-        q = select(
-            events_table.c.id,
-            events_table.c.camera_id,
-            events_table.c.person_id,
-            events_table.c.person_type,
-            events_table.c.matched,
-            events_table.c.timestamp,
-            events_table.c.bbox,
-        ).where(
-            and_(events_table.c.org_id == org,
-                 events_table.c.timestamp.like(f"{target_date}%"))
-        )
+        q = select(events_table.c.id, events_table.c.camera_id, events_table.c.person_id,
+            events_table.c.person_type, events_table.c.matched, events_table.c.timestamp, events_table.c.bbox,
+        ).where(and_(events_table.c.org_id == org, events_table.c.timestamp.like(f"{target_date}%")))
         rows = _rows_to_list(conn.execute(q))
     for r in rows:
         r["bbox"] = _json_field(r.get("bbox"), "[]")
@@ -1779,33 +1639,18 @@ def db_get_events_for_analytics(target_date: str) -> List[dict]:
 def db_get_attendance_for_analytics(target_date: str) -> List[dict]:
     org = get_org_id()
     with engine.connect() as conn:
-        rows = _rows_to_list(conn.execute(
-            select(
-                attendance_table.c.id,
-                attendance_table.c.person_id,
-                attendance_table.c.status,
-                attendance_table.c.checkin_time,
-                attendance_table.c.checkout_time,
-                attendance_table.c.date,
-            ).where(
-                and_(attendance_table.c.org_id == org,
-                     attendance_table.c.date == target_date)
-            )
-        ))
+        rows = _rows_to_list(conn.execute(select(
+            attendance_table.c.id, attendance_table.c.person_id, attendance_table.c.status,
+            attendance_table.c.checkin_time, attendance_table.c.checkout_time, attendance_table.c.date,
+        ).where(and_(attendance_table.c.org_id == org, attendance_table.c.date == target_date))))
     return rows
 
 def db_get_all_attendance_dates() -> List[dict]:
-    """Get attendance count per date (last 7 days) for daily chart. Filtered by tenant."""
     org = get_org_id()
     with engine.connect() as conn:
-        rows = conn.execute(text("""
-            SELECT date, COUNT(*) as count
-            FROM `3c_eng_attendance`
-            WHERE org_id = :org
-            GROUP BY date
-            ORDER BY date DESC
-            LIMIT 7
-        """), {"org": org}).fetchall()
+        rows = conn.execute(text(
+            "SELECT date, COUNT(*) as count FROM `3c_eng_attendance` WHERE org_id = :org GROUP BY date ORDER BY date DESC LIMIT 7"
+        ), {"org": org}).fetchall()
     return [{"date": r[0], "count": r[1]} for r in rows]
 
 def db_get_dashboard_stats(target_date: Optional[str] = None) -> dict:

@@ -27,8 +27,12 @@ dist/
 # nssm/ download dir is local only
 nssm/
 
-# ── Scripts subfolders (research/debug/migration/tools — local only) ──
-scripts/
+# ── Scripts subfolders (research/debug/migration — local only) ──
+scripts/research/
+scripts/debug/
+scripts/migration/
+# tools are committed (deployment helpers)
+# scripts/tools/ is tracked
 
 # ── Result text files ──
 *_result.txt
