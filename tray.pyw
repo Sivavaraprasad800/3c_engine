@@ -151,6 +151,11 @@ def main():
     # ── Open native app window (no browser, no URL bar) ──────────────────
     import webview
 
+    # Use icon file if it exists
+    _icon_file = str(APP_DIR / "icon_tray.png")
+    if not os.path.exists(_icon_file):
+        _icon_file = None
+
     window = webview.create_window(
         title       = "3C Engine — Face Recognition System",
         url         = APP_URL,
@@ -159,7 +164,6 @@ def main():
         min_size    = (900, 600),
         resizable   = True,
         on_top      = False,
-        # Hide the URL bar — this makes it look like a native app
         text_select = False,
     )
 
@@ -167,9 +171,10 @@ def main():
 
     # Start webview (blocks until window is closed)
     webview.start(
-        debug    = False,
-        gui      = "edgechromium",   # uses Edge WebView2 (built into Windows 11/10)
+        debug       = False,
+        gui         = "edgechromium",
         http_server = False,
+        icon        = _icon_file,
     )
 
     # Window closed — but keep server running in background (for 24/7)

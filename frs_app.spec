@@ -22,6 +22,9 @@ datas = [
     *( [(os.path.join(ROOT, "id_map.pkl"), ".")] if os.path.exists(os.path.join(ROOT, "id_map.pkl")) else [] ),
     # .env template
     (os.path.join(ROOT, ".env.example"), "."),
+    # Icons
+    *( [(os.path.join(ROOT, "icon_tray.png"), ".")] if os.path.exists(os.path.join(ROOT, "icon_tray.png")) else [] ),
+    *( [(os.path.join(ROOT, "icon.ico"), ".")] if os.path.exists(os.path.join(ROOT, "icon.ico")) else [] ),
 ]
 
 # ── Hidden imports ────────────────────────────────────────────────────────────
@@ -109,7 +112,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon=os.path.join(ROOT, "icon.ico") if os.path.exists(os.path.join(ROOT, "icon.ico")) else None,
 )
 
 coll = COLLECT(
