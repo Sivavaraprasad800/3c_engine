@@ -65,6 +65,19 @@ import uvicorn
 # Render sets PORT itself, so production is unaffected.
 port = int(os.environ.get("PORT", 8001))
 
+# ── When running as a PyInstaller exe, ensure dist/ is found ─────────────────
+# The exe runs from its own folder; dist/ must be next to the exe.
+# We also check _MEIPASS (bundled resources) as fallback.
+if getattr(sys, 'frozen', False):
+    _exe_dir = os.path.dirname(sys.executable)
+    _internal_dist = os.path.join(sys._MEIPASS, "dist")  # bundled copy
+    _exe_dist = os.path.join(_exe_dir, "dist")            # next to exe
+    if not os.path.exists(_exe_dist) and os.path.exists(_internal_dist):
+        # First run: copy dist/ from _internal to exe directory
+        import shutil
+        shutil.copytree(_internal_dist, _exe_dist)
+        print(f"[start] Copied dist/ to {_exe_dist}")
+
 # ── Friendly port-in-use check (avoids the scary Errno 10048) ──
 import socket
 _probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
