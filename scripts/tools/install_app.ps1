@@ -3,8 +3,8 @@
 # Double-clicking the shortcut opens the native app window (no browser)
 
 $AppDir  = "d:\kk]\siva\frs_ai_model-main\frs_ai_model-main"
-$Python  = "C:\Users\siva\AppData\Local\Programs\Python\Python310\pythonw.exe"  # pythonw = no console
-$Script  = "$AppDir\tray.pyw"
+$Python  = "C:\Users\siva\AppData\Local\Programs\Python\Python310\pythonw.exe"
+$Script  = "$AppDir\launcher.pyw"
 $Icon    = "$AppDir\icon.ico"
 $AppName = "3C Engine FRS"
 
