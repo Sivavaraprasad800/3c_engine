@@ -5436,12 +5436,101 @@ function CamerasPage() {
 }
 
 // ─── MAIN APP ────────────────────────────────────────────────
+// ─── FIRST-RUN SETUP PAGE ────────────────────────────────────
+function SetupPage({ onComplete }) {
+  const [orgId, setOrgId]       = useState("");
+  const [saving, setSaving]     = useState(false);
+  const [error, setError]       = useState("");
+
+  const handleSave = async () => {
+    const val = orgId.trim().toLowerCase().replace(/\s+/g, "_");
+    if (!val || val.length < 2) { setError("Please enter a valid company name (min 2 characters)"); return; }
+    if (!/^[a-z0-9_-]+$/.test(val)) { setError("Only letters, numbers, underscores and hyphens allowed"); return; }
+    setSaving(true); setError("");
+    const res = await fetchAPI("/api/v1/org/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ org_id: val })
+    });
+    setSaving(false);
+    if (res?.success) { onComplete(val); }
+    else setError(res?.detail || "Setup failed — check server");
+  };
+
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", justifyContent: "center",
+      height: "100vh", background: "var(--bg)",
+    }}>
+      <div style={{
+        background: "var(--surface)", border: "1px solid var(--border)",
+        borderRadius: 12, padding: 48, width: 460, maxWidth: "90vw",
+        boxShadow: "0 8px 40px rgba(0,0,0,.5)"
+      }}>
+        {/* Logo */}
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <div style={{
+            width: 72, height: 72, background: "var(--accent)", borderRadius: 16,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 28, fontWeight: 700, color: "#fff", margin: "0 auto 16px"
+          }}>3C</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: "var(--text)" }}>Welcome to FRS 3C Engine</div>
+          <div style={{ fontSize: 13, color: "var(--text2)", marginTop: 6 }}>
+            Face Recognition System — First Time Setup
+          </div>
+        </div>
+
+        {/* Form */}
+        <div style={{ marginBottom: 24 }}>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text2)", textTransform: "uppercase", letterSpacing: ".06em", display: "block", marginBottom: 8 }}>
+            Company / Organisation Name *
+          </label>
+          <input
+            type="text"
+            value={orgId}
+            onChange={e => { setOrgId(e.target.value); setError(""); }}
+            onKeyDown={e => e.key === "Enter" && handleSave()}
+            placeholder="e.g. zdotbox, factops, my_company"
+            autoFocus
+            style={{
+              width: "100%", padding: "12px 14px", fontSize: 14,
+              background: "var(--surface2)", border: `1px solid ${error ? "var(--red)" : "var(--border)"}`,
+              borderRadius: 6, color: "var(--text)", outline: "none", boxSizing: "border-box"
+            }}
+          />
+          {error && <div style={{ fontSize: 11, color: "var(--red)", marginTop: 6 }}>{error}</div>}
+          <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 8 }}>
+            This name identifies your site. It keeps your data separate from other installations.
+            Use lowercase letters, no spaces.
+          </div>
+        </div>
+
+        <button
+          className="btn btn-primary"
+          style={{ width: "100%", padding: "13px", fontSize: 14, fontWeight: 600 }}
+          disabled={saving || !orgId.trim()}
+          onClick={handleSave}
+        >
+          {saving ? "Setting up..." : "Start FRS →"}
+        </button>
+
+        <div style={{ textAlign: "center", marginTop: 20, fontSize: 11, color: "var(--text3)" }}>
+          Your data is stored securely and isolated from other sites.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [page, setPage] = useState("dashboard");
   const [stats, setStats] = useState(null);
   const [serverOk, setServerOk] = useState(null);
   const [health, setHealth] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // First-run setup
+  const [showSetup, setShowSetup] = useState(window.location.hash === "#setup");
+  const [orgId, setOrgId] = useState("");
 
   const loadData = useCallback(async () => {
     const [s, h] = await Promise.all([
@@ -5449,19 +5538,32 @@ export default function App() {
       fetchAPI("/api/v1/health")
     ]);
     if (s) setStats(s);
-    if (h) { setHealth(h); setServerOk(true); } else setServerOk(false);
+    if (h) {
+      setHealth(h); setServerOk(true);
+      // Check if org is configured — if not, show setup
+      if (h.org_id === "default" || !h.org_id) setShowSetup(true);
+      else { setOrgId(h.org_id); setShowSetup(false); }
+    } else setServerOk(false);
   }, []);
 
   useEffect(() => {
     loadData();
     const t = setInterval(loadData, 30000);
-    // ── Keep Render awake — ping health every 8 minutes ──────
-    // Render free tier sleeps after 15 min inactivity → 30s cold start
     const keepAlive = setInterval(() => {
       fetch(`${API_BASE}/api/v1/health`).catch(() => { });
     }, 8 * 60 * 1000);
     return () => { clearInterval(t); clearInterval(keepAlive); };
   }, [loadData]);
+
+  // Show setup screen on first run
+  if (showSetup) {
+    return (
+      <>
+        <style>{styles}</style>
+        <SetupPage onComplete={(id) => { setOrgId(id); setShowSetup(false); loadData(); }} />
+      </>
+    );
+  }
 
   const nav = [
     { id: "dashboard", label: "My Dashboards", icon: icons.dashboard, top: true },

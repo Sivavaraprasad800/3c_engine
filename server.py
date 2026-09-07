@@ -1664,6 +1664,58 @@ def health():
             "running_cameras": running, "camera_fps": camera_fps,
             "timestamp": datetime.now().isoformat()}
 
+# ─── ORG SETUP — first-run configuration ─────────────────────
+@app.get("/api/v1/org/config")
+def get_org_config():
+    """Return current org configuration."""
+    from database import get_org_id
+    org = get_org_id()
+    return {
+        "org_id": org,
+        "is_configured": org != "default" and org != "",
+        "env_file_exists": Path(".env").exists(),
+    }
+
+@app.post("/api/v1/org/setup")
+async def save_org_setup(request: Request):
+    """
+    Save org_id to .env file and restart detection.
+    Called from first-run setup page.
+    Does NOT touch database.
+    """
+    data = await request.json()
+    org_id = (data.get("org_id") or "").strip().lower().replace(" ", "_")
+    if not org_id or len(org_id) < 2:
+        raise HTTPException(400, "org_id must be at least 2 characters")
+    if not org_id.replace("_", "").replace("-", "").isalnum():
+        raise HTTPException(400, "org_id must contain only letters, numbers, underscores, hyphens")
+
+    # Read existing .env
+    env_path = Path(".env")
+    if env_path.exists():
+        lines = env_path.read_text(encoding="utf-8-sig").splitlines()
+        new_lines = []
+        found = False
+        for line in lines:
+            if line.strip().startswith("ORG_ID="):
+                new_lines.append(f"ORG_ID={org_id}")
+                found = True
+            else:
+                new_lines.append(line)
+        if not found:
+            new_lines.append(f"ORG_ID={org_id}")
+        env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    else:
+        env_path.write_text(f"ORG_ID={org_id}\n", encoding="utf-8")
+
+    # Update in-memory org_id immediately (no restart needed)
+    import database as _db
+    _db._ORG_ID = org_id
+    os.environ["ORG_ID"] = org_id
+
+    print(f"[Setup] ORG_ID set to '{org_id}' and saved to .env")
+    return {"success": True, "org_id": org_id, "message": f"Organisation '{org_id}' configured successfully."}
+
 @app.get("/api/v1/diagnostics")
 def camera_diagnostics():
     """Returns the last 200 lines of camera diagnostics log."""
