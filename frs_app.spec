@@ -1,30 +1,30 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for FRS 3C Engine
-# Build with Python 3.10:
-#   C:\Users\siva\AppData\Local\Programs\Python\Python310\Scripts\pyinstaller.exe frs_app.spec
+# FRS 3C Engine — PyInstaller spec
+# Entry point: tray.pyw  (system tray app, no console)
+#
+# Build command (Python 3.10 only):
+#   C:\Users\siva\AppData\Local\Programs\Python\Python310\Scripts\pyinstaller.exe frs_app.spec --clean --distpath exe_output --workpath build_tmp
 
-import sys
 import os
 from pathlib import Path
 
 block_cipher = None
-
 ROOT = os.path.abspath(".")
 
-# ── Collect all data files needed at runtime ─────────────────
+# ── Data files bundled inside the exe ────────────────────────────────────────
 datas = [
-    # React frontend (built dist/)
+    # React frontend
     (os.path.join(ROOT, "dist"), "dist"),
-    # InsightFace models (buffalo_l downloaded to ~/.insightface)
+    # InsightFace models
     (os.path.join(os.path.expanduser("~"), ".insightface"), ".insightface"),
-    # FAISS local fallback files (if they exist)
+    # FAISS local fallback
     *( [(os.path.join(ROOT, "face_index.faiss"), ".")] if os.path.exists(os.path.join(ROOT, "face_index.faiss")) else [] ),
     *( [(os.path.join(ROOT, "id_map.pkl"), ".")] if os.path.exists(os.path.join(ROOT, "id_map.pkl")) else [] ),
-    # .env template (NOT the real .env — that stays out of the exe)
+    # .env template
     (os.path.join(ROOT, ".env.example"), "."),
 ]
 
-# ── Hidden imports PyInstaller misses ────────────────────────
+# ── Hidden imports ────────────────────────────────────────────────────────────
 hiddenimports = [
     # FastAPI / Starlette
     "fastapi", "fastapi.routing", "fastapi.middleware.cors",
@@ -33,16 +33,13 @@ hiddenimports = [
     "starlette.middleware.cors", "starlette.staticfiles",
     "starlette.responses", "starlette.requests",
     # Uvicorn
-    "uvicorn", "uvicorn.logging", "uvicorn.loops",
-    "uvicorn.loops.auto", "uvicorn.protocols",
-    "uvicorn.protocols.http", "uvicorn.protocols.http.auto",
+    "uvicorn", "uvicorn.logging", "uvicorn.loops", "uvicorn.loops.auto",
+    "uvicorn.protocols", "uvicorn.protocols.http", "uvicorn.protocols.http.auto",
     "uvicorn.protocols.websockets", "uvicorn.protocols.websockets.auto",
     "uvicorn.lifespan", "uvicorn.lifespan.on",
-    # SQLAlchemy
-    "sqlalchemy", "sqlalchemy.dialects.mysql",
-    "sqlalchemy.dialects.mysql.pymysql",
+    # SQLAlchemy + MySQL
+    "sqlalchemy", "sqlalchemy.dialects.mysql", "sqlalchemy.dialects.mysql.pymysql",
     "sqlalchemy.pool", "sqlalchemy.engine",
-    # PyMySQL
     "pymysql", "pymysql.cursors",
     # InsightFace / ONNX
     "insightface", "insightface.app", "insightface.model_zoo",
@@ -53,24 +50,25 @@ hiddenimports = [
     "cv2",
     # NumPy / SciPy
     "numpy", "scipy", "scipy.spatial",
+    # Pydantic
+    "pydantic", "pydantic.v1", "annotated_types", "typing_extensions",
+    # Multipart / forms
+    "multipart", "python_multipart", "multipart.multipart",
+    # Pillow (for tray icon)
+    "PIL", "PIL.Image", "PIL.ImageDraw", "PIL.ImageFont",
+    # Pystray (system tray)
+    "pystray", "pystray._win32",
     # Misc
-    "pydantic", "pydantic.v1",
-    "annotated_types", "typing_extensions",
-    "multipart", "python_multipart",
-    "multipart.multipart",
-    "aiofiles",
-    "email_validator",
-    "dotenv",
-    "pickle", "json", "threading", "pathlib",
+    "email_validator", "dotenv", "pickle", "json", "threading", "pathlib",
+    "webbrowser", "subprocess", "logging",
     # App modules
-    "database", "face_engine", "camera_diagnostics",
-    "global_tracker", "zone_utils",
-    "external_events_db", "kloudspot_service",
-    "camera_processor",
+    "server", "database", "face_engine", "camera_diagnostics",
+    "global_tracker", "zone_utils", "external_events_db",
+    "kloudspot_service", "camera_processor", "start",
 ]
 
 a = Analysis(
-    ["start.py"],
+    ["tray.pyw"],
     pathex=[ROOT],
     binaries=[],
     datas=datas,
@@ -79,9 +77,8 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # Exclude heavy unused packages to keep size down
         "tkinter", "matplotlib", "pandas", "jupyter",
-        "IPython", "PIL", "torch", "tensorflow",
+        "IPython", "torch", "tensorflow",
         "basicsr", "gfpgan", "realesrgan",
         "paddleocr", "paddle",
     ],
@@ -97,13 +94,13 @@ exe = EXE(
     pyz,
     a.scripts,
     [],
-    exclude_binaries=True,   # use COLLECT (folder) not single-file — faster startup
+    exclude_binaries=True,
     name="FRS_3C_Engine",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,               # no UPX — faster build, more reliable
-    console=True,            # keep console so you can see server logs
+    upx=False,
+    console=False,          # NO console window — tray app runs silently
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
